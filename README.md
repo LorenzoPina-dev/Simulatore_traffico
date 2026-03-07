@@ -30,7 +30,7 @@
 
 ## 1. Anteprima
 
-![Simulazione incrocio a +](.\traffic_simulation_intersection.gif)
+![Simulazione incrocio a +](traffic_simulation_intersection.gif)
 
 *600 step, griglia 90x90, 3 corsie per senso di marcia, semaforo verde=45 step / giallo=6 step.*
 
