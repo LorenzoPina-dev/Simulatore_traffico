@@ -4,30 +4,34 @@ geometry.py — Geometria della griglia e funzioni spaziali.
 GridGeometry calcola e memorizza tutti i bounds dell'incrocio
 a partire da SimConfig + TopologyConfig.
 
-Supporta:
-    - Numero di corsie diverso per ogni braccio
-    - Centro dell'incrocio con offset rispetto al centro della griglia
-    - Bracci disabilitati (T-junction, ecc.)
-    - Corsie dedicate (left_turn_lane / right_turn_lane)
-    - Slip lanes: corsie fisiche a L attorno agli angoli dell'incrocio
+Slip lane trigger (bypass destra):
+    Il trigger e' posizionato 2 celle PRIMA della stop line, cosi'
+    il percorso bypass NON passa mai per la cella del semaforo rosso.
+    Il path inizia con un "hook" perpendicolare che porta l'auto
+    nella riga/colonna adiacente esterna (sotto/sopra/destra/sinistra
+    del bordo stradale), poi ripiega per rientrare nel percorso L.
+
+    SW (→→↓): trigger (ir1, ic0-3)
+      hook: (ir1+1,ic0-3)→(ir1+1,ic0-2)→(ir1+1,ic0-1)
+      L-leg: (ir1+2,ic0-1)…(ir1+N,ic0-1)   exit→(ir1+N,ic0) ↓
+
+    NW (↓→←): trigger (ir0-3, ic0)
+      hook: (ir0-3,ic0-1)→(ir0-2,ic0-1)→(ir0-1,ic0-1)
+      L-leg: (ir0-1,ic0-2)…(ir0-1,ic0-N)   exit→(ir0,ic0-N) ←
+
+    NE (←→↑): trigger (ir0, ic1+3)
+      hook: (ir0-1,ic1+3)→(ir0-1,ic1+2)→(ir0-1,ic1+1)
+      L-leg: (ir0-2,ic1+1)…(ir0-N,ic1+1)   exit→(ir0-N,ic1) ↑
+
+    SE (↑→→): trigger (ir1+3, ic1)
+      hook: (ir1+3,ic1+1)→(ir1+2,ic1+1)→(ir1+1,ic1+1)
+      L-leg: (ir1+1,ic1+2)…(ir1+1,ic1+N)   exit→(ir1,ic1+N) →
 
 Convenzione CODICE DELLA STRADA (guida a DESTRA):
-    WEST segment  →  porta traffico → (east-going)  righe [center_r … ir1]   (a SUD = destra per chi va EST)
-    EAST segment  →  porta traffico ← (west-going)  righe [ir0 … center_r-1](a NORD = destra per chi va OVEST)
-    NORTH segment →  porta traffico ↓ (south-going) colonne [ic0 … center_c-1](a OVEST = destra per chi va SUD)
-    SOUTH segment →  porta traffico ↑ (north-going) colonne [center_c … ic1] (a EST = destra per chi va NORD)
-
-Bounds incrocio:
-    ir0 = center_r - lanes_west
-    ir1 = center_r + lanes_east - 1
-    ic0 = center_c - lanes_south   (prima col ↓, lato OVEST)
-    ic1 = center_c + lanes_north - 1
-
-Slip lane paths (L-shape, percorso fisico visibile):
-    SW (→ to ↓):  N celle a SUD lungo col ic0-1, poi exit in (ir1+N, ic0)
-    NW (↓ to ←):  N celle a OVEST lungo riga ir0-1, poi exit in (ir0, ic0-N)
-    NE (← to ↑):  N celle a NORD lungo col ic1+1, poi exit in (ir0-N, ic1)
-    SE (↑ to →):  N celle a EST lungo riga ir1+1, poi exit in (ir1, ic1+N)
+    WEST segment  →  righe [center_r … ir1]
+    EAST segment  ←  righe [ir0 … center_r-1]
+    NORTH segment ↓  colonne [ic0 … center_c-1]
+    SOUTH segment ↑  colonne [center_c … ic1]
 """
 
 from __future__ import annotations
@@ -37,20 +41,26 @@ if TYPE_CHECKING:
     from .config   import SimConfig
     from .topology import TopologyConfig
 
+# Celle prima della stop line in cui il trigger slip viene arretrato.
+# 2 = trigger a ic0-3 (1 cella stop line + 2 offset).
+_SLIP_PRETRIGGER = 2
+
 
 class SlipEntry(NamedTuple):
     """
     Descrive un singolo slip lane (bypass fisico a L attorno a un angolo).
 
-    entry_r, entry_c       : cella trigger di ingresso (ultima cella normale prima dell'incrocio)
-    entry_dr, entry_dc     : direzione in entrata
-    exit_r,  exit_c        : prima cella dopo lo slip (su strada normale)
-    exit_dr, exit_dc       : direzione di uscita (sulla nuova strada)
-    corner                 : angolo ('SW'|'NW'|'NE'|'SE')
-    path                   : sequenza ordinata (r,c) celle fisiche del percorso,
-                             inclusa la exit cell come ultima
-    visual_cells           : tuple (r,c) delle sole celle di bypass (senza exit cell)
-                             da colorare come slip lane nel render
+    Il percorso bypassa la stop line grazie a un "hook" iniziale
+    perpendicolare che porta l'auto fuori dalla corsia principale
+    prima di raggiungere la cella del semaforo.
+
+    entry_r, entry_c   : cella trigger (2 celle prima della stop line)
+    entry_dr, entry_dc : direzione in entrata
+    exit_r,  exit_c    : prima cella sulla strada di uscita
+    exit_dr, exit_dc   : direzione di uscita
+    corner             : angolo ('SW'|'NW'|'NE'|'SE')
+    path               : sequenza ordinata (r,c) - hook + L-leg + exit
+    visual_cells       : celle bypass (path senza exit) da colorare
     """
     entry_r:      int
     entry_c:      int
@@ -61,14 +71,12 @@ class SlipEntry(NamedTuple):
     exit_dr:      int
     exit_dc:      int
     corner:       str
-    path:         tuple   # ordinato: slip cells + exit cell
-    visual_cells: tuple   # solo le slip cells (sottoinsieme di path)
+    path:         tuple
+    visual_cells: tuple
 
 
 class GridGeometry:
-    """
-    Geometria completa dell'incrocio, calcolata da SimConfig + TopologyConfig.
-    """
+    """Geometria completa dell'incrocio, calcolata da SimConfig + TopologyConfig."""
 
     def __init__(self, cfg: "SimConfig"):
         from .topology import TopologyConfig, RoadSegment
@@ -102,11 +110,9 @@ class GridGeometry:
             (e.entry_r, e.entry_c, e.entry_dr, e.entry_dc): e
             for e in self._slip_entries
         }
-        # Celle visive (solo la parte bypass, non la exit cell che è strada normale)
         self._slip_visual_cells: Set[Tuple[int,int]] = {
             cell for e in self._slip_entries for cell in e.visual_cells
         }
-        # Tutte le celle del percorso (inclusa exit) per collision avoidance
         self._slip_path_cells: Set[Tuple[int,int]] = {
             cell for e in self._slip_entries for cell in e.path
         }
@@ -196,29 +202,22 @@ class GridGeometry:
     def spawn_entries(self) -> Iterator[Tuple[int, int, int, int, str, Optional[str]]]:
         """
         Genera i punti di ingresso ai bordi della griglia.
-
-        Regola CODICE DELLA STRADA: le auto entrano SEMPRE dalla corsia
-        piu' a destra (lane 0), poi usano il cambio corsia per sorpassare.
-        Eccezione: corsie dedicate (left_turn_lane / right_turn_lane) che
-        vengono yieldate comunque per permettere lo spawn su di esse.
+        Le auto entrano sempre dalla corsia piu' a destra (lane 0).
+        Le corsie dedicate vengono yieldate comunque.
         """
         topo = self.topo
 
-        # → (est): spawn su corsia 0 = riga ir1 (piu' a sud = destra per chi va est)
         if topo.west.enabled:
             total = self.lanes_east
-            # Corsia 0 (rightmost)
             r0 = self.ir1
             fi0 = topo.west.forced_intent(0, total)
             yield (r0, 0, 0, 1, "east", fi0)
-            # Corsie dedicate aggiuntive (se esistono)
             for r in range(self.center_r, self.ir1):
                 li = self.ir1 - r
                 fi = topo.west.forced_intent(li, total)
-                if fi is not None:   # solo se e' una corsia dedicata
+                if fi is not None:
                     yield (r, 0, 0, 1, "east", fi)
 
-        # ← (ovest): spawn su corsia 0 = riga ir0 (piu' a nord = destra per chi va ovest)
         if topo.east.enabled:
             total = self.lanes_west
             r0 = self.ir0
@@ -230,7 +229,6 @@ class GridGeometry:
                 if fi is not None:
                     yield (r, self.size - 1, 0, -1, "west", fi)
 
-        # ↓ (sud): spawn su corsia 0 = col ic0 (piu' a ovest = destra per chi va sud)
         if topo.north.enabled:
             total = self.lanes_south
             c0 = self.ic0
@@ -242,7 +240,6 @@ class GridGeometry:
                 if fi is not None:
                     yield (0, c, 1, 0, "south", fi)
 
-        # ↑ (nord): spawn su corsia 0 = col ic1 (piu' a est = destra per chi va nord)
         if topo.south.enabled:
             total = self.lanes_north
             c0 = self.ic1
@@ -267,94 +264,133 @@ class GridGeometry:
 
     def _compute_slip_entries(self) -> List[SlipEntry]:
         """
-        Calcola i percorsi fisici delle slip lanes per ogni angolo abilitato.
+        Calcola i percorsi fisici delle slip lanes.
 
-        Ogni percorso è un L-shape che bypassa l'angolo dell'incrocio:
-          SW (→→↓): N celle SUD lungo col ic0-1, poi entra in (ir1+N, ic0) going ↓
-          NW (↓→←): N celle OVEST lungo riga ir0-1, poi entra in (ir0, ic0-N) going ←
-          NE (←→↑): N celle NORD lungo col ic1+1, poi entra in (ir0-N, ic1) going ↑
-          SE (↑→→): N celle EST lungo riga ir1+1, poi entra in (ir1, ic1+N) going →
+        Il trigger e' spostato _SLIP_PRETRIGGER (2) celle PRIMA della
+        stop line, cosi' il bypass non dipende dallo stato del semaforo.
 
-        Il trigger di ingresso è all'ultima cella normale PRIMA dell'incrocio
-        sulla corsia più esterna (lane 0) del segmento in avvicinamento.
+        Il path inizia con un "hook" di 3 celle che porta l'auto
+        fuori dalla corsia principale (sotto/sopra il bordo della
+        strada) PRIMA di raggiungere la stop line, poi prosegue con
+        la gamba L classica e termina con la exit cell.
+
+        Geometria hook per ogni angolo:
+          SW (→↓): 1 sud + 2 est  → poi N sud + exit
+          NW (↓←): 1 ovest + 2 sud → poi N ovest + exit
+          NE (←↑): 1 nord + 2 ovest → poi N nord + exit
+          SE (↑→): 1 est + 2 nord → poi N est + exit
         """
         topo = self.topo
         if not topo.slip_lanes_enabled:
             return []
 
-        N   = topo.slip_len
+        N   = topo.slip_len          # lunghezza gamba L (celle)
+        P   = _SLIP_PRETRIGGER       # celle prima della stop line = 2
         ir0 = self.ir0; ir1 = self.ir1
         ic0 = self.ic0; ic1 = self.ic1
         entries = []
 
-        def _filter(cells):
+        def _f(cells):
+            """Filtra celle fuori dalla griglia."""
             return tuple(c for c in cells if self.in_bounds(c[0], c[1]))
 
-        # ── SW: → turning right to ↓ ─────────────────────────────────
-        # Entry trigger: (ir1, ic0-1) going →
-        # Path: N celle SUD in col ic0-1, poi cella di uscita (ir1+N, ic0)
+        # ── SW: → turning right to ↓ ──────────────────────────────
+        # Stop line →  : col ic0-1
+        # Trigger       : (ir1, ic0-1-P) = (ir1, ic0-3)
+        # Hook (3 celle): 1 SUD + 2 EST  → bypassano la riga ir1 col ic0-1
+        # L-leg (N celle): sud in col ic0-1, da ir1+2 a ir1+N
+        # Exit          : (ir1+N, ic0) going ↓
         if topo.west.enabled and topo.north.enabled:
-            er, ec    = ir1, ic0 - 1
-            exit_r, exit_c = ir1 + N, ic0
-            if self.in_bounds(er, ec) and self.in_bounds(exit_r, exit_c):
-                slip_cells = [(ir1 + k, ic0 - 1) for k in range(1, N + 1)]
-                path = _filter(slip_cells + [(exit_r, exit_c)])
-                vis  = _filter(slip_cells)
+            tc, tr = ic0 - 1 - P, ir1   # trigger col, row
+            if self.in_bounds(tr, tc):
+                hook = [
+                    (ir1 + 1, ic0 - 1 - P),   # 1 sud
+                    (ir1 + 1, ic0 - P),        # est
+                    (ir1 + 1, ic0 - 1),        # est (sotto la stop line row)
+                ]
+                l_leg = [(ir1 + k, ic0 - 1) for k in range(2, N + 1)]
+                exit_cell = (ir1 + N, ic0)
+                path = _f(hook + l_leg + [exit_cell])
+                vis  = _f(hook + l_leg)
                 if path:
                     entries.append(SlipEntry(
-                        er, ec, 0, 1,
-                        exit_r, exit_c, 1, 0,
+                        tr, tc, 0, 1,
+                        ir1 + N, ic0, 1, 0,
                         "SW", path, vis
                     ))
 
-        # ── NW: ↓ turning right to ← ─────────────────────────────────
-        # Entry trigger: (ir0-1, ic0) going ↓
-        # Path: N celle OVEST in riga ir0-1, poi cella di uscita (ir0, ic0-N)
+        # ── NW: ↓ turning right to ← ──────────────────────────────
+        # Stop line ↓  : riga ir0-1, col [ic0..cc-1]
+        # Trigger       : (ir0-1-P, ic0) = (ir0-3, ic0)
+        # Hook (3 celle): 1 OVEST + 2 SUD → bypassano la col ic0 riga ir0-1
+        # L-leg (N celle): ovest in riga ir0-1, da ic0-2 a ic0-N
+        # Exit          : (ir0, ic0-N) going ←
         if topo.north.enabled and topo.east.enabled:
-            er, ec    = ir0 - 1, ic0
-            exit_r, exit_c = ir0, ic0 - N
-            if self.in_bounds(er, ec) and self.in_bounds(exit_r, exit_c):
-                slip_cells = [(ir0 - 1, ic0 - k) for k in range(1, N + 1)]
-                path = _filter(slip_cells + [(exit_r, exit_c)])
-                vis  = _filter(slip_cells)
+            tr, tc = ir0 - 1 - P, ic0
+            if self.in_bounds(tr, tc):
+                hook = [
+                    (ir0 - 1 - P, ic0 - 1),   # 1 ovest
+                    (ir0 - P,     ic0 - 1),    # sud
+                    (ir0 - 1,     ic0 - 1),    # sud (sinistra della stop col)
+                ]
+                l_leg = [(ir0 - 1, ic0 - k) for k in range(2, N + 1)]
+                exit_cell = (ir0, ic0 - N)
+                path = _f(hook + l_leg + [exit_cell])
+                vis  = _f(hook + l_leg)
                 if path:
                     entries.append(SlipEntry(
-                        er, ec, 1, 0,
-                        exit_r, exit_c, 0, -1,
+                        tr, tc, 1, 0,
+                        ir0, ic0 - N, 0, -1,
                         "NW", path, vis
                     ))
 
-        # ── NE: ← turning right to ↑ ─────────────────────────────────
-        # Entry trigger: (ir0, ic1+1) going ←
-        # Path: N celle NORD in col ic1+1, poi cella di uscita (ir0-N, ic1)
+        # ── NE: ← turning right to ↑ ──────────────────────────────
+        # Stop line ← : col ic1+1, righe [ir0..cr-1]
+        # Trigger      : (ir0, ic1+1+P) = (ir0, ic1+3)
+        # Hook (3 celle): 1 NORD + 2 OVEST → bypassano la riga ir0 col ic1+1
+        # L-leg (N celle): nord in col ic1+1, da ir0-2 a ir0-N
+        # Exit          : (ir0-N, ic1) going ↑
         if topo.east.enabled and topo.south.enabled:
-            er, ec    = ir0, ic1 + 1
-            exit_r, exit_c = ir0 - N, ic1
-            if self.in_bounds(er, ec) and self.in_bounds(exit_r, exit_c):
-                slip_cells = [(ir0 - k, ic1 + 1) for k in range(1, N + 1)]
-                path = _filter(slip_cells + [(exit_r, exit_c)])
-                vis  = _filter(slip_cells)
+            tr, tc = ir0, ic1 + 1 + P
+            if self.in_bounds(tr, tc):
+                hook = [
+                    (ir0 - 1, ic1 + 1 + P),   # 1 nord
+                    (ir0 - 1, ic1 + P),        # ovest
+                    (ir0 - 1, ic1 + 1),        # ovest (sopra la stop line row)
+                ]
+                l_leg = [(ir0 - k, ic1 + 1) for k in range(2, N + 1)]
+                exit_cell = (ir0 - N, ic1)
+                path = _f(hook + l_leg + [exit_cell])
+                vis  = _f(hook + l_leg)
                 if path:
                     entries.append(SlipEntry(
-                        er, ec, 0, -1,
-                        exit_r, exit_c, -1, 0,
+                        tr, tc, 0, -1,
+                        ir0 - N, ic1, -1, 0,
                         "NE", path, vis
                     ))
 
-        # ── SE: ↑ turning right to → ─────────────────────────────────
-        # Entry trigger: (ir1+1, ic1) going ↑
-        # Path: N celle EST in riga ir1+1, poi cella di uscita (ir1, ic1+N)
+        # ── SE: ↑ turning right to → ──────────────────────────────
+        # Stop line ↑ : riga ir1+1, col [cc..ic1]
+        # Trigger      : (ir1+1+P, ic1) = (ir1+3, ic1)
+        # Hook (3 celle): 1 EST + 2 NORD → bypassano la riga ir1+1 col ic1
+        # L-leg (N celle): est in riga ir1+1, da ic1+2 a ic1+N
+        # Exit          : (ir1, ic1+N) going →
         if topo.south.enabled and topo.west.enabled:
-            er, ec    = ir1 + 1, ic1
-            exit_r, exit_c = ir1, ic1 + N
-            if self.in_bounds(er, ec) and self.in_bounds(exit_r, exit_c):
-                slip_cells = [(ir1 + 1, ic1 + k) for k in range(1, N + 1)]
-                path = _filter(slip_cells + [(exit_r, exit_c)])
-                vis  = _filter(slip_cells)
+            tr, tc = ir1 + 1 + P, ic1
+            if self.in_bounds(tr, tc):
+                hook = [
+                    (ir1 + 1 + P, ic1 + 1),   # 1 est
+                    (ir1 + P,     ic1 + 1),    # nord
+                    (ir1 + 1,     ic1 + 1),    # nord (destra della stop col range)
+                ]
+                l_leg = [(ir1 + 1, ic1 + k) for k in range(2, N + 1)]
+                exit_cell = (ir1, ic1 + N)
+                path = _f(hook + l_leg + [exit_cell])
+                vis  = _f(hook + l_leg)
                 if path:
                     entries.append(SlipEntry(
-                        er, ec, -1, 0,
-                        exit_r, exit_c, 0, 1,
+                        tr, tc, -1, 0,
+                        ir1, ic1 + N, 0, 1,
                         "SE", path, vis
                     ))
 
@@ -363,17 +399,15 @@ class GridGeometry:
     def check_slip_entry(
         self, r: int, c: int, dr: int, dc: int
     ) -> Optional[SlipEntry]:
-        """Controlla se (r,c,dr,dc) è un trigger di ingresso slip lane."""
+        """Controlla se (r,c,dr,dc) e' un trigger di ingresso slip lane."""
         return self._slip_entry_map.get((r, c, dr, dc))
 
     @property
     def slip_visual_cells(self) -> Set[Tuple[int,int]]:
-        """Celle di bypass da colorare come slip road (senza exit cell)."""
         return self._slip_visual_cells
 
     @property
     def slip_path_cells(self) -> Set[Tuple[int,int]]:
-        """Tutte le celle dei percorsi slip (incluse exit cells)."""
         return self._slip_path_cells
 
     @property
@@ -382,24 +416,37 @@ class GridGeometry:
 
     def is_slip_exclusive_lane(self, r: int, c: int, dr: int, dc: int) -> bool:
         """
-        True se (r,c) è nella corsia esclusiva di avvicinamento allo slip
-        (le N celle prima dell'incrocio sulla corsia più esterna).
-        Usato dallo spawn per forzare intent='right'.
+        True se (r,c) e' nella zona di approccio esclusiva allo slip
+        (le N celle prima del trigger, compreso il trigger stesso).
+
+        Il trigger e' ora a _SLIP_PRETRIGGER celle prima della stop line:
+          → : trigger a col ic0-3, zona [ic0-3-N … ic0-3] in riga ir1
+          ↓ : trigger a riga ir0-3, zona [ir0-3-N … ir0-3] in col ic0
+          ← : trigger a col ic1+3, zona [ic1+3 … ic1+3+N] in riga ir0
+          ↑ : trigger a riga ir1+3, zona [ir1+3 … ir1+3+N] in col ic1
         """
         if not self.topo.slip_exclusive:
             return False
         li = self.lane_index(r, c, dr, dc)
         if li != 0:
             return False
+
         N = self.topo.slip_len
-        if dc == 1  and r == self.ir1 and self.ic0 - N <= c < self.ic0:
-            return True
-        if dr == 1  and c == self.ic0 and self.ir0 - N <= r < self.ir0:
-            return True
-        if dc == -1 and r == self.ir0 and self.ic1 < c <= self.ic1 + N:
-            return True
-        if dr == -1 and c == self.ic1 and self.ir1 < r <= self.ir1 + N:
-            return True
+        P = _SLIP_PRETRIGGER
+        trig_offset = 1 + P   # stop line offset (1) + pretrigger (2) = 3
+
+        if dc == 1:   # →: trigger col = ic0 - trig_offset
+            t = self.ic0 - trig_offset
+            return r == self.ir1 and t - N <= c <= t
+        if dc == -1:  # ←: trigger col = ic1 + trig_offset
+            t = self.ic1 + trig_offset
+            return r == self.ir0 and t <= c <= t + N
+        if dr == 1:   # ↓: trigger row = ir0 - trig_offset
+            t = self.ir0 - trig_offset
+            return c == self.ic0 and t - N <= r <= t
+        if dr == -1:  # ↑: trigger row = ir1 + trig_offset
+            t = self.ir1 + trig_offset
+            return c == self.ic1 and t <= r <= t + N
         return False
 
     def __repr__(self) -> str:

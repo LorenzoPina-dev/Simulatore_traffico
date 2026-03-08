@@ -287,8 +287,9 @@ class SimConfig:
 
     def summary(self) -> str:
         """Stringa riassuntiva dei parametri principali."""
+        rule = getattr(self.topology, "row_yield_to", "right") if self.topology else "right"
         row_str = (
-            f"ON  lookahead={self.row_lookahead}  "
+            f"ON  rule={rule}  lookahead={self.row_lookahead}  "
             f"oncoming={self.row_oncoming_check}  "
             f"frus_factor={self.row_frustration_factor}"
             if self.row_enabled else "OFF"

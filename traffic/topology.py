@@ -177,6 +177,24 @@ class TopologyConfig:
     slip_len:           int  = 5
     slip_exclusive:     bool = True
 
+    # ── Regola di precedenza (right-of-way) ──────────────────────────
+    # row_yield_to : regola usata da RightOfWayChecker per decidere chi
+    #               ha la precedenza all'incrocio.
+    #
+    #   "right"    (DEFAULT) — incrocio non regolato italiano:
+    #               chi viene DA DESTRA ha la precedenza su tutti.
+    #               Si applica a TUTTE le auto in approccio.
+    #
+    #   "left"     — rotatoria:
+    #               chi e' GIA' NELL'INCROCIO (proveniente da sinistra
+    #               nel senso di rotazione) ha la precedenza.
+    #               Le auto in entrata cedono a chi circola.
+    #
+    #   "oncoming" — comportamento storico:
+    #               solo chi gira a SINISTRA cede al traffico opposto
+    #               (dritto o destra). Le altre manovre non cedono.
+    row_yield_to: str = "right"   # "right" | "left" | "oncoming"
+
     # ── Helper ────────────────────────────────────────────────────────
 
     def arm(self, name: str) -> RoadSegment:
@@ -411,6 +429,44 @@ TOPOLOGIES["T_slip"] = TopologyConfig(
     slip_lanes_enabled = True,
     slip_len           = 5,
     slip_exclusive     = True,
+)
+
+
+# ── 19. Rotatoria (precedenza a sinistra = chi è già nell'incrocio) ────────────────
+# In una rotatoria chi e' gia' in circolazione ha la precedenza.
+# Usiamo NO_LIGHT (semaforo disabilitato) e row_yield_to="left".
+TOPOLOGIES["roundabout"] = TopologyConfig(
+    name         = "roundabout",
+    row_yield_to = "left",
+)
+
+# ── 20. Immissione su strada principale (precedenza a chi e' in strada) ──────
+# La strada principale H ha la precedenza; la strada secondaria cede.
+# row_yield_to="left" significa che il traffico sull'asse principale
+# (proveniente da sinistra per chi si immette dal basso/alto) non ferma.
+TOPOLOGIES["yield_to_main"] = TopologyConfig(
+    name              = "yield_to_main",
+    west              = _seg(lanes_inbound=4, label="main"),
+    east              = _seg(lanes_inbound=4, label="main"),
+    north             = _seg(lanes_inbound=2, label="secondary"),
+    south             = _seg(lanes_inbound=2, label="secondary"),
+    row_yield_to      = "left",   # chi e' gia' in strada (asse H) ha la precedenza
+)
+
+# ── 21. Incrocio non regolato (precedenza a destra, no semaforo) ─────────
+# Incrocio senza semaforo: regola italiana “priorita' a destra”.
+TOPOLOGIES["priority_right"] = TopologyConfig(
+    name         = "priority_right",
+    row_yield_to = "right",
+)
+
+# ── 22. Incrocio con slip lanes + precedenza a destra ──────────────────────
+TOPOLOGIES["slip_priority_right"] = TopologyConfig(
+    name               = "slip_priority_right",
+    slip_lanes_enabled = True,
+    slip_len           = 5,
+    slip_exclusive     = True,
+    row_yield_to       = "right",
 )
 
 
