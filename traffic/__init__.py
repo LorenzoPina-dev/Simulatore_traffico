@@ -12,20 +12,28 @@ Moduli:
 """
 from .config        import SimConfig, PersonalityProfile, LightPolicy, ManualObstacle
 from .entities      import Personality, Car, Obstacle
-from .geometry      import GridGeometry
+from .geometry      import GridGeometry, SlipEntry
 from .traffic_light import TrafficLight
 from .right_of_way  import RightOfWayChecker
 from .simulation    import Sim
 from .renderer      import Renderer
 from .scenarios     import SCENARIOS, list_scenarios
+from .topology      import TopologyConfig, RoadSegment, TOPOLOGIES, list_topologies
 
 __all__ = [
+    # Config
     "SimConfig", "PersonalityProfile", "LightPolicy", "ManualObstacle",
+    # Topology
+    "TopologyConfig", "RoadSegment", "TOPOLOGIES", "list_topologies",
+    # Entities
     "Personality", "Car", "Obstacle",
-    "GridGeometry",
+    # Geometry
+    "GridGeometry", "SlipEntry",
+    # Core
     "TrafficLight",
     "RightOfWayChecker",
     "Sim",
     "Renderer",
+    # Scenarios
     "SCENARIOS", "list_scenarios",
 ]

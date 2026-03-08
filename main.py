@@ -16,6 +16,7 @@ import sys
 import matplotlib.pyplot as plt
 
 from traffic import SCENARIOS, list_scenarios, SimConfig, Sim, Renderer
+from traffic import TopologyConfig, RoadSegment, TOPOLOGIES, list_topologies
 from traffic.config import LightPolicy, ManualObstacle
 
 

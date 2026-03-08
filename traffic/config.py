@@ -14,7 +14,7 @@ Esempio rapido:
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 
 # =====================================================================
@@ -221,6 +221,17 @@ class SimConfig:
         default_factory=lambda: list(DEFAULT_PROFILES)
     )
 
+    # ── Topologia incrocio ───────────────────────────────────────────
+    # topology : TopologyConfig che descrive i bracci e le corsie dedicate.
+    #            None = topologia standard a + (equivale a TopologyConfig()).
+    topology: object = field(default=None)  # TopologyConfig | None
+
+    def __post_init__(self):
+        """Inizializza topology al valore di default se None."""
+        if self.topology is None:
+            from .topology import TopologyConfig
+            self.topology = TopologyConfig()
+
     # ── Comportamento incrocio ────────────────────────────────────────
     inter_max_speed:           int   = 2
     frustration_max:           int   = 20
@@ -241,12 +252,31 @@ class SimConfig:
     # ── Helper: probabilita' spawn per direzione ──────────────────────
     def spawn_for(self, direction: str) -> float:
         """
-        Ritorna la probabilita' di spawn per una direzione specifica.
-        Se non e' stato impostato un override, usa spawn_prob globale.
+        Ritorna la probabilita' di spawn per una direzione di marcia.
+
+        Priorita':
+            1. spawn_prob del segmento di provenienza (TopologyConfig)
+            2. override direzionale di SimConfig (spawn_prob_east, ecc.)
+            3. spawn_prob globale
 
         Args:
-            direction: 'east' | 'west' | 'south' | 'north'
+            direction: 'east'|'west'|'south'|'north' (direzione di marcia)
+
+        Mapping direzione → segmento fisico:
+            'east'  (cars going →) proviene da WEST segment
+            'west'  (cars going ←) proviene da EAST segment
+            'south' (cars going ↓) proviene da NORTH segment
+            'north' (cars going ↑) proviene da SOUTH segment
         """
+        # 1. Override da topologia (segmento fisico di provenienza)
+        seg_name = {"east": "west", "west": "east",
+                    "south": "north", "north": "south"}.get(direction)
+        if seg_name and self.topology is not None:
+            seg = getattr(self.topology, seg_name, None)
+            if seg and seg.spawn_prob is not None:
+                return seg.spawn_prob
+
+        # 2. Override direzionale SimConfig
         override = {
             "east":  self.spawn_prob_east,
             "west":  self.spawn_prob_west,

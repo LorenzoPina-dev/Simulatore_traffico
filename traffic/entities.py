@@ -119,6 +119,15 @@ class Car:
         self._row_val  = False   # True = ha deciso di cedere la precedenza
         self._row_step = -1
 
+        # Stato slip lane (bypass fisico a L, visibile cella per cella)
+        # slip_path     : sequenza ordinata (r,c) celle del percorso (slip + exit cell)
+        # slip_path_idx : indice della prossima cella da raggiungere
+        # slip_exit_dr/dc : direzione di marcia al termine del percorso
+        self.slip_path:     tuple = ()   # vuoto = non in slip lane
+        self.slip_path_idx: int   = 0
+        self.slip_exit_dr:  int   = 0
+        self.slip_exit_dc:  int   = 0
+
     def __repr__(self) -> str:
         return (
             f"Car(id={self.id}, pos=({self.r},{self.c}), "

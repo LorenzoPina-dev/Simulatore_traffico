@@ -19,7 +19,11 @@ from .config import (
     SimConfig, LightPolicy, ManualObstacle,
     PersonalityProfile, DEFAULT_PROFILES,
 )
+from .topology import TopologyConfig, RoadSegment, TOPOLOGIES
 import copy
+
+def _seg(**kw) -> RoadSegment:
+    return RoadSegment(**kw)
 
 
 def list_scenarios() -> list:
@@ -244,4 +248,170 @@ SCENARIOS["row_disabled"] = SimConfig(
     spawn_prob     = 0.38,
     accident_prob  = 0.0006,
     steps          = 600,
+)
+
+
+# =====================================================================
+# SCENARI TOPOLOGIA
+# =====================================================================
+
+# ── 14. T-junction: nessuna strada verso nord ───────────────────────
+SCENARIOS["T_no_north"] = SimConfig(
+    output_file = "out_T_no_north.gif",
+    topology    = TOPOLOGIES["T_no_north"],
+    spawn_prob  = 0.35,
+    steps       = 500,
+    light_green_h = 40,
+    light_green_v = 25,   # asse V ha meno traffico
+)
+
+# ── 15. T-junction: strada che termina a est (solo 3 bracci) ────────
+SCENARIOS["T_no_east"] = SimConfig(
+    output_file = "out_T_no_east.gif",
+    topology    = TOPOLOGIES["T_no_east"],
+    spawn_prob  = 0.35,
+    steps       = 500,
+)
+
+# ── 16. Incrocio con corsie dedicate svolta sinistra ───────────────
+# Richiede num_lanes >= 2 perche' la corsia più a sinistra e' riservata.
+SCENARIOS["dedicated_left"] = SimConfig(
+    output_file = "out_dedicated_left.gif",
+    num_lanes   = 3,
+    topology    = TOPOLOGIES["dedicated_left_all"],
+    spawn_prob  = 0.38,
+    steps       = 600,
+    row_enabled = True,
+    row_lookahead = 10,
+)
+
+# ── 17. Corsie dedicate sia sinistra che destra (richiede 3+ corsie) ─
+SCENARIOS["dedicated_both"] = SimConfig(
+    output_file = "out_dedicated_both.gif",
+    num_lanes   = 4,
+    topology    = TOPOLOGIES["dedicated_both_all"],
+    spawn_prob  = 0.40,
+    steps       = 600,
+    row_enabled = True,
+)
+
+# ── 18. Strada principale (H, 4 corsie) + secondaria (V, 2 corsie) ──
+SCENARIOS["asymmetric_main"] = SimConfig(
+    output_file   = "out_asymmetric_main.gif",
+    num_lanes     = 4,   # default, ovverrideato dalla topologia per V
+    topology      = TOPOLOGIES["asymmetric_H_main"],
+    spawn_prob    = 0.38,
+    # Spawn asimmetrico: più traffico sull'asse principale
+    spawn_prob_east  = 0.45,  # ← su asse principale H
+    spawn_prob_west  = 0.45,  # → su asse principale H  (wait, actually east label = west segment)
+    light_green_h    = 55,    # verde più lungo per l'asse H (principale)
+    light_green_v    = 25,
+    steps            = 600,
+)
+
+# ── 19. Incrocio spostato a sinistra ─────────────────────────────
+SCENARIOS["offset_intersection"] = SimConfig(
+    output_file = "out_offset.gif",
+    topology    = TOPOLOGIES["offset_left"],
+    spawn_prob  = 0.32,
+    steps       = 500,
+)
+
+# ── 20. T-junction con corsie dedicate + spawn asimmetrico ─────────
+SCENARIOS["T_dedicated"] = SimConfig(
+    output_file = "out_T_dedicated.gif",
+    num_lanes   = 3,
+    topology    = TopologyConfig(
+        name  = "T_dedicated_custom",
+        north = _seg(enabled=False),
+        west  = _seg(lanes_inbound=3, left_turn_lane=True,  label="main_in"),
+        east  = _seg(lanes_inbound=3, right_turn_lane=True, label="main_out"),
+        south = _seg(lanes_inbound=2, label="side"),
+    ),
+    spawn_prob       = 0.38,
+    spawn_prob_east  = 0.50,  # traffico abbondante in entrata
+    light_green_h    = 50,
+    light_green_v    = 20,
+    steps            = 600,
+    row_enabled      = True,
+)
+
+# ── 21. Incrocio completo stile boulevard ─────────────────────────
+# 4 corsie per senso su asse H, corsie dedicate svolta, asse V secondario
+SCENARIOS["boulevard"] = SimConfig(
+    output_file = "out_boulevard.gif",
+    num_lanes   = 4,
+    topology    = TopologyConfig(
+        name  = "boulevard",
+        west  = _seg(lanes_inbound=4, left_turn_lane=True,  right_turn_lane=True),
+        east  = _seg(lanes_inbound=4, left_turn_lane=True,  right_turn_lane=True),
+        north = _seg(lanes_inbound=2, left_turn_lane=False, right_turn_lane=False),
+        south = _seg(lanes_inbound=2),
+    ),
+    spawn_prob_east  = 0.50,
+    spawn_prob_west  = 0.50,
+    spawn_prob_south = 0.20,
+    spawn_prob_north = 0.20,
+    light_green_h    = 60,
+    light_green_v    = 20,
+    accident_prob    = 0.00030,
+    row_enabled      = True,
+    steps            = 600,
+)
+
+
+# =====================================================================
+# SCENARI SLIP LANES (bypass svolta destra)
+# =====================================================================
+
+# ── 22. Incrocio standard con slip lanes ───────────────────────────
+SCENARIOS["slip_lanes"] = SimConfig(
+    output_file        = "out_slip_lanes.gif",
+    topology           = TOPOLOGIES["slip_standard"],
+    spawn_prob         = 0.35,
+    steps              = 600,
+    light_green_h      = 40,
+    light_green_v      = 40,
+    row_enabled        = True,
+)
+
+# ── 23. Slip lanes con corsie condivise (non esclusive) ─────────────
+# La corsia dx non e' riservata: anche auto dritto/sx possono starci
+SCENARIOS["slip_shared"] = SimConfig(
+    output_file        = "out_slip_shared.gif",
+    topology           = TOPOLOGIES["slip_shared"],
+    spawn_prob         = 0.35,
+    steps              = 600,
+)
+
+# ── 24. Boulevard con slip lanes + corsie sx dedicate ──────────────
+# Scenario ricco: asse principale con corsia sx dedicata E bypass dx
+SCENARIOS["slip_boulevard"] = SimConfig(
+    output_file        = "out_slip_boulevard.gif",
+    num_lanes          = 3,
+    topology           = TOPOLOGIES["slip_dedicated"],
+    spawn_prob         = 0.40,
+    light_green_h      = 50,
+    light_green_v      = 30,
+    row_enabled        = True,
+    steps              = 600,
+)
+
+# ── 25. T-junction con slip lanes ───────────────────────────────
+SCENARIOS["T_slip"] = SimConfig(
+    output_file        = "out_T_slip.gif",
+    topology           = TOPOLOGIES["T_slip"],
+    spawn_prob         = 0.35,
+    steps              = 500,
+)
+
+# ── 26. Confronto slip_lanes vs standard (stesso traffico, no slip) ──
+# Uguale a slip_lanes ma senza bypass: utile per misurare il guadagno
+SCENARIOS["slip_vs_noSlip"] = SimConfig(
+    output_file        = "out_no_slip_comparison.gif",
+    topology           = TopologyConfig(name="plus_noslip"),  # niente slip
+    spawn_prob         = 0.35,
+    steps              = 600,
+    light_green_h      = 40,
+    light_green_v      = 40,
 )

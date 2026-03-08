@@ -1,4 +1,4 @@
-"""
+""""
 simulation.py — Motore principale della simulazione.
 
 Sim esegue gli step del modello Nagel-Schreckenberg esteso.
@@ -61,6 +61,7 @@ class Sim:
         self.total_red_runners    = 0
         self.total_row_violations = 0   # precedenze ignorate
         self.total_row_yields     = 0   # precedenze rispettate
+        self.total_slip_uses      = 0   # auto che hanno usato lo slip lane
 
         # Checker precedenza
         self.row_checker = RightOfWayChecker(cfg, self.geo)
@@ -148,12 +149,18 @@ class Sim:
         if n > cap:
             return
 
-        for r, c, dr, dc, direction in geo.spawn_entries():
+        for r, c, dr, dc, direction, forced_intent in geo.spawn_entries():
             if random.random() < cfg.spawn_for(direction):
                 if (r, c) not in occ:
                     pi  = random.choices(self._pers_indices,
                                          weights=self._pers_weights)[0]
                     car = Car(r, c, dr, dc, pi, cfg, geo)
+                    # Forza l'intent per le corsie dedicate
+                    if forced_intent is not None:
+                        car.intent = forced_intent
+                    # Se la corsia di spawn e' esclusiva slip, forza intent='right'
+                    elif geo.is_slip_exclusive_lane(r, c, dr, dc):
+                        car.intent = "right"
                     self.cars.append(car)
                     occ[(r, c)] = car
                     self.total_spawned += 1
@@ -162,10 +169,9 @@ class Sim:
 
     def _try_lane_change(self, car: Car, occ: Dict, obs_s: Set) -> bool:
         """
-        Tenta un cambio corsia sicuro per sorpasso o per aggirare un ostacolo.
-        Controlla: gap avanti nella corsia target >= ms-1, gap dietro >= 1.
-
-        Non eseguito dentro l'incrocio.
+        Tenta un cambio corsia a SINISTRA (sorpasso) se la strada davanti e'
+        bloccata. Controlla: gap avanti nella corsia target >= ms-1, gap
+        dietro >= 1. Non eseguito dentro l'incrocio.
         Ritorna True se il cambio e' avvenuto.
         """
         if car.in_inter:
@@ -173,38 +179,71 @@ class Sim:
 
         gap = self.gap_ahead(car.r, car.c, car.dr, car.dc, occ, obs_s, set())
         if gap >= car.ms:
-            return False   # strada libera, nessun incentivo
+            return False   # strada libera, nessun incentivo al sorpasso
 
         geo = self.geo
-        if car.dc != 0:   # auto orizzontale
-            candidates = [(car.r + 1, car.c), (car.r - 1, car.c)]
-        else:             # auto verticale
-            candidates = [(car.r, car.c + 1), (car.r, car.c - 1)]
+        # Calcola la cella a SINISTRA nel senso di marcia
+        # (sorpasso: ci si sposta verso la corsia con indice lane+1)
+        if car.dc == 1:    nr, nc = car.r - 1, car.c   # →: sinistra = su (riga -1)
+        elif car.dc == -1: nr, nc = car.r + 1, car.c   # ←: sinistra = giu' (riga +1)
+        elif car.dr == 1:  nr, nc = car.r, car.c + 1   # ↓: sinistra = dx (col +1)
+        else:              nr, nc = car.r, car.c - 1   # ↑: sinistra = sx (col -1)
 
-        random.shuffle(candidates)  # evita bias sistematico
+        if not geo.in_bounds(nr, nc): return False
+        if not geo.valid_lane_cell(nr, nc, car.dr, car.dc): return False
+        if (nr, nc) in occ or (nr, nc) in obs_s: return False
 
-        for nr, nc in candidates:
-            if not geo.in_bounds(nr, nc):
-                continue
-            if not geo.valid_lane_cell(nr, nc, car.dr, car.dc):
-                continue
-            if (nr, nc) in occ or (nr, nc) in obs_s:
-                continue
-            gf = self.gap_ahead(nr, nc, car.dr, car.dc, occ, obs_s, set())
-            gr = self.gap_rear(nr, nc, car.dr, car.dc, occ)
-            if gf < max(1, car.ms - 1) or gr < 1:
-                continue
+        gf = self.gap_ahead(nr, nc, car.dr, car.dc, occ, obs_s, set())
+        gr = self.gap_rear(nr, nc, car.dr, car.dc, occ)
+        if gf < max(1, car.ms - 1) or gr < 1:
+            return False
 
-            # Esegui cambio corsia
-            occ.pop((car.r, car.c), None)
-            car.r  = nr
-            car.c  = nc
-            car.li = geo.lane_index(nr, nc, car.dr, car.dc)
-            occ[(car.r, car.c)] = car
-            car.frus = max(0, car.frus - 2)
-            return True
+        occ.pop((car.r, car.c), None)
+        car.r  = nr
+        car.c  = nc
+        car.li = geo.lane_index(nr, nc, car.dr, car.dc)
+        occ[(car.r, car.c)] = car
+        car.frus = max(0, car.frus - 2)
+        return True
 
-        return False
+    def _try_keep_right(self, car: Car, occ: Dict, obs_s: Set) -> bool:
+        """
+        Torna nella corsia piu' a destra (lane 0) quando possibile.
+        Regola 'tieni la destra' del codice della strada italiano.
+
+        Condizioni per spostarsi a destra:
+        - Non nell'incrocio
+        - Non gia' in corsia 0
+        - La cella a destra e' libera
+        - Gap davanti e dietro in quella corsia >= 1
+        """
+        if car.in_inter:
+            return False
+        if car.li == 0:
+            return False   # gia' in corsia destra
+
+        geo = self.geo
+        # Cella a DESTRA nel senso di marcia (lane idx decresce verso 0)
+        if car.dc == 1:    nr, nc = car.r + 1, car.c   # →: destra = giu' (riga +1)
+        elif car.dc == -1: nr, nc = car.r - 1, car.c   # ←: destra = su (riga -1)
+        elif car.dr == 1:  nr, nc = car.r, car.c - 1   # ↓: destra = sx (col -1)
+        else:              nr, nc = car.r, car.c + 1   # ↑: destra = dx (col +1)
+
+        if not geo.in_bounds(nr, nc): return False
+        if not geo.valid_lane_cell(nr, nc, car.dr, car.dc): return False
+        if (nr, nc) in occ or (nr, nc) in obs_s: return False
+
+        gf = self.gap_ahead(nr, nc, car.dr, car.dc, occ, obs_s, set())
+        gr = self.gap_rear(nr, nc, car.dr, car.dc, occ)
+        if gf < 1 or gr < 1:
+            return False
+
+        occ.pop((car.r, car.c), None)
+        car.r  = nr
+        car.c  = nc
+        car.li = geo.lane_index(nr, nc, car.dr, car.dc)
+        occ[(car.r, car.c)] = car
+        return True
 
     # ── Svolta all'incrocio ───────────────────────────────────────────
 
@@ -213,7 +252,11 @@ class Sim:
         Esegue la svolta prevista dall'intent quando la macchina
         raggiunge il punto di svolta nell'incrocio.
 
-        Svolta DESTRA : alla fine dell'incrocio (lato opposto)
+        Prima controlla se il segmento di uscita e' abilitato nella
+        topologia. Se il segmento e' disabilitato, riassegna l'intent
+        al miglior fallback disponibile (di solito 'straight').
+
+        Svolta DESTRA : alla fine dell'incrocio
         Svolta SINISTRA: a meta' dell'incrocio
 
         Ritorna True se la svolta e' stata eseguita.
@@ -221,35 +264,47 @@ class Sim:
         if car.turned or car.intent == "straight":
             return False
 
-        geo = self.geo
+        geo  = self.geo
+        topo = self.cfg.topology
         r, c, dr, dc = car.r, car.c, car.dr, car.dc
         intent = car.intent
+
+        # ── Verifica segmento di uscita abilitato ─────────────────────
+        if not topo.is_turn_possible(dr, dc, intent):
+            car.intent = topo.fallback_intent(dr, dc, intent)
+            if car.intent == "straight":
+                return False
+            intent = car.intent
+
         triggered = False
         nr, nc, ndr, ndc = r, c, dr, dc
 
-        if dc == 1:    # -> (EST)
+        cr = geo.center_r
+        cc = geo.center_c
+
+        if dc == 1:    # → (EST)
             if intent == "right" and c >= geo.ic1:
-                nr = geo.ir1 + 1; nc = geo.center;     ndr = 1;  ndc = 0; triggered = True
-            elif intent == "left" and c >= geo.center:
-                nr = geo.ir0 - 1; nc = geo.center - 1; ndr = -1; ndc = 0; triggered = True
+                nr = geo.ir1 + 1; nc = cc - 1; ndr = 1;  ndc = 0; triggered = True  # ↓ a cc-1
+            elif intent == "left" and c >= cc:
+                nr = geo.ir0 - 1; nc = cc;     ndr = -1; ndc = 0; triggered = True  # ↑ a cc
 
-        elif dc == -1: # <- (OVEST)
+        elif dc == -1: # ← (OVEST)
             if intent == "right" and c <= geo.ic0:
-                nr = geo.ir0 - 1; nc = geo.center - 1; ndr = -1; ndc = 0; triggered = True
-            elif intent == "left" and c <= geo.center:
-                nr = geo.ir1 + 1; nc = geo.center;     ndr = 1;  ndc = 0; triggered = True
+                nr = geo.ir0 - 1; nc = cc;     ndr = -1; ndc = 0; triggered = True  # ↑ a cc
+            elif intent == "left" and c <= cc:
+                nr = geo.ir1 + 1; nc = cc - 1; ndr =  1; ndc = 0; triggered = True  # ↓ a cc-1
 
-        elif dr == 1:  # v (SUD)
+        elif dr == 1:  # ↓ (SUD)
             if intent == "right" and r >= geo.ir1:
-                nr = geo.center - geo.half; nc = geo.ic0 - 1; ndr = 0; ndc = -1; triggered = True
-            elif intent == "left" and r >= geo.center:
-                nr = geo.center + geo.half - 1; nc = geo.ic1 + 1; ndr = 0; ndc = 1; triggered = True
+                nr = geo.ir0; nc = geo.ic0 - 1; ndr = 0; ndc = -1; triggered = True
+            elif intent == "left" and r >= cr:
+                nr = geo.ir1; nc = geo.ic1 + 1; ndr = 0; ndc =  1; triggered = True
 
-        else:          # ^ (NORD)
+        else:          # ↑ (NORD)
             if intent == "right" and r <= geo.ir0:
-                nr = geo.center + geo.half - 1; nc = geo.ic1 + 1; ndr = 0; ndc = 1;  triggered = True
-            elif intent == "left" and r <= geo.center:
-                nr = geo.center - geo.half;     nc = geo.ic0 - 1; ndr = 0; ndc = -1; triggered = True
+                nr = geo.ir1; nc = geo.ic1 + 1; ndr = 0; ndc =  1; triggered = True
+            elif intent == "left" and r <= cr:
+                nr = geo.ir0; nc = geo.ic0 - 1; ndr = 0; ndc = -1; triggered = True
 
         if triggered and geo.in_bounds(nr, nc) and (nr, nc) not in occ:
             occ.pop((car.r, car.c), None)
@@ -305,37 +360,84 @@ class Sim:
 
         for car in self.cars:
 
+            # ── Slip lane: auto in transito sul percorso fisico a L ─────────
+            if car.slip_path:
+                idx = car.slip_path_idx
+                if idx < len(car.slip_path):
+                    next_r, next_c = car.slip_path[idx]
+                    if geo.in_bounds(next_r, next_c) and (next_r, next_c) not in occ:
+                        occ.pop((car.r, car.c), None)
+                        car.r, car.c = next_r, next_c
+                        car.slip_path_idx += 1
+                        car.spd = 1
+                        occ[(car.r, car.c)] = car
+                    # else: cella bloccata → attende questo step
+
+                # Fine percorso: imposta direzione di uscita
+                if car.slip_path_idx >= len(car.slip_path):
+                    car.dr       = car.slip_exit_dr
+                    car.dc       = car.slip_exit_dc
+                    car.slip_path     = ()
+                    car.slip_path_idx = 0
+                    car.turned   = True
+                    car.in_inter = False
+                    car.li       = geo.lane_index(car.r, car.c, car.dr, car.dc)
+
+                new_cars.append(car)
+                continue
+
             # a. Reaction delay
             if car.delay > 0:
                 car.delay -= 1
                 new_cars.append(car)
                 continue
 
-            # b. Stato incrocio e cambio corsia
+            # b. Stato incrocio e cambio corsia / tieni la destra
             car.in_inter = geo.in_intersection(car.r, car.c)
             if not car.in_inter:
-                self._try_lane_change(car, occ, obs_s)
+                # Prima prova a tornare a destra (tieni la destra)
+                if not self._try_keep_right(car, occ, obs_s):
+                    # Se non puoi tornare a destra, prova a sorpassare a sinistra
+                    self._try_lane_change(car, occ, obs_s)
+
+            # b1. Controllo entrata slip lane
+            #     Trigger: auto con intent='right' all'ultima cella prima dell'incrocio
+            if (car.intent == "right"
+                    and not car.in_inter
+                    and not car.slip_path):
+                sl = geo.check_slip_entry(car.r, car.c, car.dr, car.dc)
+                if sl is not None and sl.path:
+                    first_r, first_c = sl.path[0]
+                    if geo.in_bounds(first_r, first_c) and (first_r, first_c) not in occ:
+                        # L'auto entra fisicamente nel percorso slip
+                        occ.pop((car.r, car.c), None)
+                        car.r, car.c       = first_r, first_c
+                        car.slip_path      = sl.path
+                        car.slip_path_idx  = 1          # gia' posizionata a path[0]
+                        car.slip_exit_dr   = sl.exit_dr
+                        car.slip_exit_dc   = sl.exit_dc
+                        car.spd            = 1
+                        occ[(car.r, car.c)] = car
+                        self.total_slip_uses += 1
+                    new_cars.append(car)
+                    continue
 
             # Blocchi semaforo (vuoto se verde o se l'auto passa col rosso)
             rblocks = self.light.red_block_cells(car, self.step, geo)
             if rblocks and car._rr_val:
                 self.total_red_runners += 1   # conta solo al primo step della decisione
 
-            # b2. Precedenza (right-of-way): blocco virtuale per chi svolta a sinistra
-            #     senza cedere la precedenza al traffico opposto.
+            # b2. Precedenza (right-of-way)
             row_block: Set = set()
             if car.intent == "left" and not car.in_inter:
                 prev_row_val = car._row_val
                 prev_row_step = car._row_step
                 yields = self.row_checker.should_yield(car, occ, self.step)
                 if yields:
-                    # Il guidatore cede: blocca l'entrata nell'incrocio
                     row_block = self.row_checker.yield_block_cell(car)
-                    # Conta solo alla prima decisione di cedere (cambio False->True)
                     if not prev_row_val or prev_row_step != self.step:
                         self.total_row_yields += 1
                 else:
-                    # Controlla se c'era una minaccia reale ma ha scelto di ignorare
                     if (self.row_checker.is_approaching(car)
                             and self.row_checker.oncoming_threat(car, occ)
                             and car._row_step == self.step
@@ -349,7 +451,6 @@ class Sim:
             car.spd = min(car.spd + 1, eff_max)
 
             # d. NaSch 2 — Frenata per ostacolo / semaforo / precedenza
-            #    I tre blocchi si sommano: rosso, precedenza e ostacoli fisici.
             extra = set() if car.in_inter else (rblocks | row_block)
             gap   = self.gap_ahead(car.r, car.c, car.dr, car.dc,
                                     occ, obs_s, extra)
@@ -410,7 +511,6 @@ class Sim:
         n   = len(self.cars)
         spd = sum(c.spd  for c in self.cars) / n if n else 0.0
         fru = sum(c.frus for c in self.cars) / n if n else 0.0
-        # Auto in attesa per precedenza in questo step
         waiting_row = sum(
             1 for c in self.cars
             if c.intent == "left" and c._row_val and c._row_step == self.step
@@ -427,6 +527,8 @@ class Sim:
             total_row_vio = self.total_row_violations,
             total_row_yld = self.total_row_yields,
             waiting_row   = waiting_row,
+            total_slip    = self.total_slip_uses,
+            slip_active   = sum(1 for c in self.cars if c.slip_path),
             light_phase   = self.light.phase_label(),
         )
 
@@ -449,37 +551,82 @@ class Sim:
             8  stop line ROSSO
             9  stop line VERDE
            10  stop line GIALLO
+           11  corsia dedicata svolta sinistra
+           12  corsia dedicata svolta destra
+           13  slip lane (bypass destra)
         """
         import numpy as np
-        geo = self.geo
-        g   = np.zeros((geo.size, geo.size), dtype=float)
+        geo  = self.geo
+        topo = self.cfg.topology
+        g    = np.zeros((geo.size, geo.size), dtype=float)
 
-        # Strade
-        g[geo.ir0:geo.ir1 + 1, :] = 1
-        g[:, geo.ic0:geo.ic1 + 1] = 1
-        # Incrocio (sovrascrive)
-        g[geo.ir0:geo.ir1 + 1, geo.ic0:geo.ic1 + 1] = 2
+        cr = geo.center_r
+        cc = geo.center_c
 
-        # Stop lines
+        # ── Strade a doppio senso: ogni braccio porta ENTRAMBE le direzioni ──
+        #
+        #  Braccio H-OVEST (col 0..ic0-1):  → entra [cr..ir1]  +  ← esce [ir0..cr-1]
+        if topo.west.enabled:
+            g[cr : geo.ir1 + 1, 0 : geo.ic0] = 1
+        if topo.east.enabled:
+            g[geo.ir0 : cr, 0 : geo.ic0] = 1
+        #  Braccio H-EST  (col ic1+1..end):  → esce [cr..ir1]   +  ← entra [ir0..cr-1]
+        if topo.west.enabled:
+            g[cr : geo.ir1 + 1, geo.ic1 + 1 : geo.size] = 1
+        if topo.east.enabled:
+            g[geo.ir0 : cr, geo.ic1 + 1 : geo.size] = 1
+        #  Braccio V-NORD (riga 0..ir0-1):   ↓ entra [ic0..cc-1] +  ↑ esce [cc..ic1]
+        if topo.north.enabled:
+            g[0 : geo.ir0, geo.ic0 : cc] = 1
+        if topo.south.enabled:
+            g[0 : geo.ir0, cc : geo.ic1 + 1] = 1
+        #  Braccio V-SUD  (riga ir1+1..end):  ↓ esce [ic0..cc-1]  +  ↑ entra [cc..ic1]
+        if topo.north.enabled:
+            g[geo.ir1 + 1 : geo.size, geo.ic0 : cc] = 1
+        if topo.south.enabled:
+            g[geo.ir1 + 1 : geo.size, cc : geo.ic1 + 1] = 1
+
+        # Incrocio (sovrascrive tutto)
+        g[geo.ir0 : geo.ir1 + 1, geo.ic0 : geo.ic1 + 1] = 2
+
+        # ── Corsie dedicate (fuori dall'incrocio) ─────────────────────
+        for (r, c), intent_type in geo.dedicated_road_cells().items():
+            if geo.in_bounds(r, c):
+                g[r, c] = 11 if intent_type == "left" else 12
+
+        # ── Slip lanes: colora le celle fisiche di bypass ───────────────
+        for (r, c) in geo.slip_visual_cells:
+            if geo.in_bounds(r, c) and g[r, c] == 0:
+                g[r, c] = 13
+
+        # ── Stop lines ────────────────────────────────────────────────
+        # Ogni stop line copre ESATTAMENTE le corsie IN ENTRATA:
+        #   →  : righe [cr..ir1]     colonna ic0-1  (ovest incrocio)
+        #   ←  : righe [ir0..cr-1]   colonna ic1+1  (est incrocio)
+        #   ↓  : colonne [ic0..cc-1] riga   ir0-1  (nord incrocio)
+        #   ↑  : colonne [cc..ic1]   riga   ir1+1  (sud incrocio)
         col_h, col_v = self.light.stop_line_colors()
-        sl = geo.ic0 - 1; sr = geo.ic1 + 1
-        st = geo.ir0 - 1; sb = geo.ir1 + 1
 
-        if 0 <= sl < geo.size:
-            g[geo.center:geo.ir1 + 1, sl] = col_h
-        if 0 <= sr < geo.size:
-            g[geo.ir0:geo.center, sr] = col_h
-        if 0 <= st < geo.size:
-            g[st, geo.center:geo.ic1 + 1] = col_v
-        if 0 <= sb < geo.size:
-            g[sb, geo.ic0:geo.center] = col_v
+        sl_w = geo.ic0 - 1
+        sl_e = geo.ic1 + 1
+        sl_n = geo.ir0 - 1
+        sl_s = geo.ir1 + 1
 
-        # Ostacoli
+        if topo.west.enabled and 0 <= sl_w < geo.size:
+            g[cr : geo.ir1 + 1, sl_w] = col_h      # → corsie [cr..ir1]
+        if topo.east.enabled and 0 <= sl_e < geo.size:
+            g[geo.ir0 : cr, sl_e] = col_h           # ← corsie [ir0..cr-1]
+        if topo.north.enabled and 0 <= sl_n < geo.size:
+            g[sl_n, geo.ic0 : cc] = col_v           # ↓ corsie [ic0..cc-1]
+        if topo.south.enabled and 0 <= sl_s < geo.size:
+            g[sl_s, cc : geo.ic1 + 1] = col_v       # ↑ corsie [cc..ic1]
+
+        # ── Ostacoli ─────────────────────────────────────────────────
         for o in self.obs:
             if geo.in_bounds(o.r, o.c):
                 g[o.r, o.c] = 7
 
-        # Auto
+        # ── Auto (sovrascrivono tutto) ────────────────────────────────
         for car in self.cars:
             if geo.in_bounds(car.r, car.c):
                 if car.spd == 0:    g[car.r, car.c] = 3

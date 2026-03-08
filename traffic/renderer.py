@@ -39,6 +39,9 @@ PALETTE = [
     "#ff2020",   #  8  stop ROSSO
     "#20ff20",   #  9  stop VERDE
     "#ffc300",   # 10  stop GIALLO
+    "#1a3a5c",   # 11  corsia dedicata svolta SINISTRA
+    "#2d1a5c",   # 12  corsia dedicata svolta DESTRA
+    "#0d3d2a",   # 13  slip lane (bypass destra, angoli)
 ]
 
 LEGEND_ITEMS = [
@@ -53,6 +56,9 @@ LEGEND_ITEMS = [
     "Stop line ROSSO",
     "Stop line VERDE",
     "Stop line GIALLO",
+    "Corsia ded. sx",
+    "Corsia ded. dx",
+    "Slip lane (bypass)",
 ]
 
 
@@ -94,12 +100,13 @@ class Renderer:
         self.ax.set_facecolor("#0a0a12")
         self.im = self.ax.imshow(
             self.sim.render_grid(),
-            cmap=self.cmap, vmin=0, vmax=10,
+            cmap=self.cmap, vmin=0, vmax=13,
             aspect="equal", interpolation="nearest",
         )
 
         self._draw_lane_lines()
         self._draw_intersection_border()
+        self._draw_slip_lanes()
 
         self.ax.set_xticks([])
         self.ax.set_yticks([])
@@ -149,22 +156,49 @@ class Renderer:
         plt.tight_layout(pad=1.2)
 
     def _draw_lane_lines(self):
-        """Disegna le linee tratteggiate tra corsie e la linea di mezzeria."""
+        """
+        Disegna linee stradali su tutti e 4 i bracci fisici del + :
+        - Linea di mezzeria piena  (separa i due sensi di marcia)
+        - Linee tratteggiate       (separano le corsie dello stesso senso)
+
+        Ogni braccio e' a doppio senso — la mezzeria e' a center_r - 0.5
+        (orizzontale) e center_c - 0.5 (verticale).
+        """
         geo  = self.geo
-        half = geo.half
-        cx   = geo.center
+        topo = self.cfg.topology
+        cr   = geo.center_r
+        cc   = geo.center_c
 
-        # Linea centrale piena (divide i sensi di marcia)
-        self.ax.axhline(y=cx - 0.5, color="#ffffffcc", linewidth=1.5)
-        self.ax.axvline(x=cx - 0.5, color="#ffffffcc", linewidth=1.5)
+        kw_center = dict(color="#ffffffcc", linewidth=1.5)
+        kw_dash   = dict(color="white", linewidth=0.5, linestyle="--", alpha=0.35)
 
-        # Linee tratteggiate tra corsie dello stesso senso
-        for i in range(1, half):
-            kw = dict(color="white", linewidth=0.5, linestyle="--", alpha=0.35)
-            self.ax.axhline(y=cx + i - 0.5, **kw)
-            self.ax.axhline(y=cx - half + i - 0.5, **kw)
-            self.ax.axvline(x=cx + i - 0.5, **kw)
-            self.ax.axvline(x=cx - half + i - 0.5, **kw)
+        # ── Mezzeria orizzontale (separa → e ←) ──────────────────────
+        if topo.west.enabled or topo.east.enabled:
+            self.ax.axhline(y=cr - 0.5, **kw_center)
+
+        # ── Mezzeria verticale (separa ↓ e ↑) ────────────────────────
+        if topo.north.enabled or topo.south.enabled:
+            self.ax.axvline(x=cc - 0.5, **kw_center)
+
+        # ── Linee tratteggiate → (corsie [cr..ir1]) ───────────────────
+        if topo.west.enabled:
+            for i in range(1, geo.lanes_east):
+                self.ax.axhline(y=cr + i - 0.5, **kw_dash)
+
+        # ── Linee tratteggiate ← (corsie [ir0..cr-1]) ─────────────────
+        if topo.east.enabled:
+            for i in range(1, geo.lanes_west):
+                self.ax.axhline(y=geo.ir0 + i - 0.5, **kw_dash)
+
+        # ── Linee tratteggiate ↓ (corsie [ic0..cc-1]) ─────────────────
+        if topo.north.enabled:
+            for i in range(1, geo.lanes_south):
+                self.ax.axvline(x=geo.ic0 + i - 0.5, **kw_dash)
+
+        # ── Linee tratteggiate ↑ (corsie [cc..ic1]) ───────────────────
+        if topo.south.enabled:
+            for i in range(1, geo.lanes_north):
+                self.ax.axvline(x=cc + i - 0.5, **kw_dash)
 
     def _draw_intersection_border(self):
         """Disegna il bordo della zona incrocio."""
@@ -174,6 +208,31 @@ class Renderer:
         self.ax.axvline(x=geo.ic1 + 0.5, **kw)
         self.ax.axhline(y=geo.ir0 - 0.5, **kw)
         self.ax.axhline(y=geo.ir1 + 0.5, **kw)
+
+    def _draw_slip_lanes(self):
+        """
+        Disegna le linee guida lungo il percorso fisico a L delle slip lanes.
+        """
+        if not self.cfg.topology.slip_lanes_enabled:
+            return
+
+        geo = self.geo
+        kw  = dict(color="#00ff9960", linewidth=1.0, linestyle="-")
+        tkw = dict(color="#00ff99", fontsize=4.5, ha="center", va="center",
+                   fontweight="bold", alpha=0.85)
+
+        for entry in geo.slip_entries:
+            if not entry.path:
+                continue
+            all_pts = [(entry.entry_c, entry.entry_r)] + [(c, r) for (r, c) in entry.path]
+            xs = [p[0] for p in all_pts]
+            ys = [p[1] for p in all_pts]
+            self.ax.plot(xs, ys, **kw)
+            vis = entry.visual_cells
+            if vis:
+                mid_r = sum(r for r, c in vis) / len(vis)
+                mid_c = sum(c for r, c in vis) / len(vis)
+                self.ax.text(mid_c, mid_r, "slip", **tkw)
 
     # ── Aggiornamento frame ───────────────────────────────────────────
 
