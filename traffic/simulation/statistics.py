@@ -24,6 +24,7 @@ class SimStatistics:
         self.total_row_yields     = 0   # veicoli che hanno correttamente ceduto
         self.total_slip_uses      = 0
         self.total_emergency      = 0   # veicoli di emergenza spawnati
+        self.last_spawn_rate      = 0.0 # prob. spawn effettiva dell'ultimo step
 
     def snapshot(self, cars: List["Vehicle"], step: int, light_label: str) -> Dict:
         """Restituisce un dict con le statistiche correnti."""
@@ -71,4 +72,5 @@ class SimStatistics:
                 round(self.total_row_yields /
                       max(1, self.total_row_yields + self.total_row_violations), 3)
             ),
+            spawn_rate = self.last_spawn_rate,
         )

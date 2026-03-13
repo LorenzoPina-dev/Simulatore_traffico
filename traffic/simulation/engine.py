@@ -83,6 +83,17 @@ class SimEngine:
         self._acc_mgr = AccidentManager(cfg, self._ipr)
         self._stats   = SimStatistics()
 
+        # ── Controlli spawn runtime (modificabili dal renderer via bottoni) ──
+        self.spawn_enabled:   bool  = True   # True = spawn attivo
+        self.spawn_rate_mult: float = 1.0    # moltiplicatore frequenza [0.25 – 4.0]
+
+        # Set per contare ogni evento UNA SOLA VOLTA per veicolo per approccio.
+        # Vengono svuotati (per quel veicolo) non appena entra nell'incrocio,
+        # così ogni nuova traversata viene contata come evento indipendente.
+        self._rr_counted:      Set[int] = set()   # id veicoli già contati come red-runner
+        self._row_vio_counted: Set[int] = set()   # id veicoli già contati come viol. ROW
+        self._row_yld_counted: Set[int] = set()   # id veicoli già contati come yield ROW
+
         # Piazza ostacoli manuali
         for mo in cfg.manual_obstacles:
             self.obs.append(Obstacle(mo.row, mo.col, mo.duration, mo.label))
@@ -107,8 +118,17 @@ class SimEngine:
         obs_s = {(o.r, o.c) for o in self.obs}
 
         # ── 4. Spawn ──────────────────────────────────────────────────
-        spawned = self._spawner.spawn(self.cars, occ)
+        spawned = self._spawner.spawn(
+            self.cars, occ,
+            enabled=self.spawn_enabled,
+            rate_mult=self.spawn_rate_mult,
+        )
         self._stats.total_spawned += spawned
+        # Salva la frequenza effettiva per il grafico del renderer
+        self._stats.last_spawn_rate = (
+            self.cfg.spawn_prob * self.spawn_rate_mult
+            if self.spawn_enabled else 0.0
+        )
 
         # ── 5. Incidenti ──────────────────────────────────────────────
         accidents = self._acc_mgr.process(self.cars, occ, obs_s, self.obs)
@@ -148,6 +168,11 @@ class SimEngine:
         # ── 10. Cleanup IPR ───────────────────────────────────────────
         live_ids = {c.id for c in self.cars}
         self._ipr.cleanup_orphans(live_ids)
+        # Rimuovi dai set di conteggio i veicoli usciti dalla griglia,
+        # evitando accumulo di id orfani in memoria.
+        self._rr_counted      &= live_ids
+        self._row_vio_counted &= live_ids
+        self._row_yld_counted &= live_ids
 
     # ─────────────────────────────────────────────────────────────────
     # STEP SINGOLO VEICOLO
@@ -238,8 +263,14 @@ class SimEngine:
         if not self._move(car, ctx):
             return False
 
-        # ── m) Aggiorna in_inter ──────────────────────────────────────
+        # ── m) Aggiorna in_inter  [reset conteggi approccio] ──────────────────────────────────────
         car.in_inter = geo.in_intersection(car.r, car.c)
+        # Entrato nell'incrocio: approccio concluso. Reset flag di conteggio
+        # così la prossima traversata viene trattata come evento distinto.
+        if car.in_inter:
+            self._rr_counted.discard(car.id)
+            self._row_vio_counted.discard(car.id)
+            self._row_yld_counted.discard(car.id)
         return True
 
     # ─────────────────────────────────────────────────────────────────
@@ -260,10 +291,15 @@ class SimEngine:
         # ── Semaforo ──────────────────────────────────────────────────
         # red_block_cells restituisce set() per i veicoli con sirena attiva
         extra = ctx.light.red_block_cells(car, ctx.step, geo)
+        # Conta il passaggio col rosso SOLO UNA VOLTA per approccio:
+        # il campionamento _rr_val è già memoizzato per step dentro red_block_cells;
+        # il set _rr_counted impedisce di riaumentare il contatore ogni step successivo.
         if (not ctx.light.go_for(car)
                 and car._rr_step == ctx.step
-                and car._rr_val):
+                and car._rr_val
+                and car.id not in self._rr_counted):
             self._stats.total_red_runners += 1
+            self._rr_counted.add(car.id)
 
         # ── ROW — i veicoli di emergenza con sirena ignorano la precedenza ──
         if not car.in_inter and not is_siren:
@@ -271,14 +307,20 @@ class SimEngine:
             if apply_row:
                 if ctx.row_checker.should_yield(car, ctx.occ_snap, ctx.step):
                     extra |= ctx.row_checker.yield_block_cell(car)
-                    self._stats.total_row_yields += 1
+                    # Conta UN SOLO yield per approccio (non uno per step di attesa)
+                    if car.id not in self._row_yld_counted:
+                        self._stats.total_row_yields += 1
+                        self._row_yld_counted.add(car.id)
                 elif (
                     car._row_step == ctx.step
                     and not car._row_val
                     and car.t_stop < 25
                     and ctx.row_checker.oncoming_threat(car, ctx.occ_snap)
+                    # Conta UNA SOLA violazione per approccio
+                    and car.id not in self._row_vio_counted
                 ):
                     self._stats.total_row_violations += 1
+                    self._row_vio_counted.add(car.id)
 
         # ── Cedenza emergenza: veicoli normali si spostano e si fermano ──
         # La mossa laterale (“pull right”) è già avvenuta in decide_lane_change.

@@ -17,6 +17,7 @@ import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
 from matplotlib.text import Text
 from matplotlib.patches import FancyBboxPatch
+from matplotlib.widgets import Button
 
 if TYPE_CHECKING:
     from .simulation import Sim
@@ -119,6 +120,7 @@ class Renderer:
         self._hist_rr:     List[float] = []
         self._hist_row:    List[float] = []
         self._hist_plat:   List[float] = []   # plotoni attivi
+        self._hist_spawn:  List[float] = []   # frequenza spawn (x100)
         self._ipr_texts:   List[Text] = []
         self._block_texts: List[Text] = []
         self._stop_texts:  List[Text] = []
@@ -128,13 +130,43 @@ class Renderer:
 
     # ── Costruzione figura ────────────────────────────────────────────
 
+    # ── Helper bottoni spawn ──────────────────────────────────────────
+
+    def _freq_label(self) -> str:
+        """Etichetta frequenza spawn corrente."""
+        mult = self.sim.spawn_rate_mult
+        pct  = int(round(self.sim.cfg.spawn_prob * mult * 100))
+        return f"{mult:.2f}x  ({pct}%)"
+
+    def _on_toggle_spawn(self, _event):
+        """Pausa / riprendi spawn."""
+        self.sim.spawn_enabled = not self.sim.spawn_enabled
+        if self.sim.spawn_enabled:
+            self._btn_toggle.label.set_text("\u23f8 Pausa Spawn")
+        else:
+            self._btn_toggle.label.set_text("\u25b6 Riprendi Spawn")
+        self.fig.canvas.draw_idle()
+
+    def _on_freq_down(self, _event):
+        """Diminuisce frequenza spawn del 25% (min 0.25x)."""
+        self.sim.spawn_rate_mult = max(0.25, round(self.sim.spawn_rate_mult - 0.25, 2))
+        self._lbl_freq.set_text(self._freq_label())
+        self.fig.canvas.draw_idle()
+
+    def _on_freq_up(self, _event):
+        """Aumenta frequenza spawn del 25% (max 4.0x)."""
+        self.sim.spawn_rate_mult = min(4.0, round(self.sim.spawn_rate_mult + 0.25, 2))
+        self._lbl_freq.set_text(self._freq_label())
+        self.fig.canvas.draw_idle()
+
     def _build_figure(self):
-        self.fig, (self.ax, self.ax_s) = plt.subplots(
-            2, 1,
-            figsize=(10, 11),
-            gridspec_kw={"height_ratios": [9, 2]},
-        )
+        # Figura leggermente più alta per ospitare la barra dei controlli
+        self.fig = plt.figure(figsize=(10, 12.4))
         self.fig.patch.set_facecolor("#0a0a12")
+
+        # Tre aree: griglia sim (alta), grafico stats (media), bottoni (bassa)
+        self.ax   = self.fig.add_axes([0.04, 0.27, 0.92, 0.70])  # griglia
+        self.ax_s = self.fig.add_axes([0.04, 0.13, 0.92, 0.12])  # stats
 
         geo = self.geo
 
@@ -193,12 +225,42 @@ class Renderer:
             [], [], color="#ff9f1c", linewidth=1.0, linestyle=":", label="Prec.ign. /5")
         self.line_plat, = self.ax_s.plot(
             [], [], color="#00b4d8", linewidth=1.0, linestyle="-.", label="Plotoni ×3")
+        self.line_spawn, = self.ax_s.plot(
+            [], [], color="#c77dff", linewidth=1.6, linestyle="-", label="Spawn ×100")
         self.ax_s.legend(
             loc="upper left", fontsize=7,
             facecolor="#1a1a2e", edgecolor="#444", labelcolor="white",
         )
 
-        plt.tight_layout(pad=1.2)
+        # ── Barra controlli spawn ───────────────────────────────────────────
+        _bkw = dict(facecolor="#1e1e30", edgecolor="#555")
+
+        ax_btn_tog  = self.fig.add_axes([0.04, 0.02, 0.24, 0.07])
+        ax_btn_down = self.fig.add_axes([0.32, 0.02, 0.13, 0.07])
+        ax_lbl_freq = self.fig.add_axes([0.47, 0.02, 0.12, 0.07])
+        ax_btn_up   = self.fig.add_axes([0.61, 0.02, 0.13, 0.07])
+
+        ax_lbl_freq.set_axis_off()
+        ax_lbl_freq.set_facecolor("#0d0d1a")
+
+        self._btn_toggle = Button(ax_btn_tog,  "⏸ Pausa Spawn", **_bkw)
+        self._btn_down   = Button(ax_btn_down, "− Freq (-25%)",  **_bkw)
+        self._btn_up     = Button(ax_btn_up,   "+ Freq (+25%)",   **_bkw)
+
+        for btn in (self._btn_toggle, self._btn_down, self._btn_up):
+            btn.label.set_color("white")
+            btn.label.set_fontsize(9)
+
+        self._lbl_freq = ax_lbl_freq.text(
+            0.5, 0.5, self._freq_label(),
+            ha="center", va="center",
+            color="#c77dff", fontsize=10, fontweight="bold",
+            transform=ax_lbl_freq.transAxes,
+        )
+
+        self._btn_toggle.on_clicked(self._on_toggle_spawn)
+        self._btn_down.on_clicked(self._on_freq_down)
+        self._btn_up.on_clicked(self._on_freq_up)
 
     def _draw_lane_lines(self):
         geo  = self.geo
@@ -444,6 +506,8 @@ class Renderer:
         compliance = s.get('row_compliance_rate', 1.0)
         ipr_res = self.sim.reservation_map()
         ipr_cnt = len(ipr_res)
+        spawn_icon = ("⏸ SPAWN OFF" if not self.sim.spawn_enabled
+                       else f"SPAWN {self.sim.spawn_rate_mult:.2f}x")
         self.title.set_text(
             f"Step {s['step']:4d}  |  Auto:{s['cars']:3d}  [{type_str}]  "
             f"|  Vel:{s['avg_speed']:.2f}  |  Sem:{s['light_phase']}  "
@@ -451,7 +515,7 @@ class Renderer:
             f"|  Rosso:{s['total_rr']}  "
             f"|  ROW ced:{s.get('total_row_yld', 0)} viol:{s.get('total_row_vio', 0)}  "
             f"|  WaitingROW:{s.get('waiting_row', 0)}  IPRres:{ipr_cnt}  "
-            f"|  Compliance:{compliance:.0%}"
+            f"|  Compliance:{compliance:.0%}  |  [{spawn_icon}]"
         )
 
         # Grafici
@@ -460,6 +524,8 @@ class Renderer:
         self._hist_rr.append(s["total_rr"] / 10)
         self._hist_row.append(s["total_row_vio"] / 5)
         self._hist_plat.append(s["num_platoons"] * 3)
+        # Frequenza spawn effettiva: 0 se pausa, altrimenti prob*mult*100
+        self._hist_spawn.append(s.get("spawn_rate", 0.0) * 100)
 
         xs = list(range(len(self._hist_cars)))
         self.line_cars.set_data(xs, self._hist_cars)
@@ -467,15 +533,20 @@ class Renderer:
         self.line_rr.set_data(xs, self._hist_rr)
         self.line_row.set_data(xs, self._hist_row)
         self.line_plat.set_data(xs, self._hist_plat)
+        self.line_spawn.set_data(xs, self._hist_spawn)
+
+        # Aggiorna etichetta frequenza (potrebbe essere cambiata da bottone)
+        self._lbl_freq.set_text(self._freq_label())
 
         self.ax_s.set_xlim(0, max(self.cfg.steps, len(self._hist_cars)))
         top = max(100.0,
-                  max(self._hist_rr)  if self._hist_rr  else 100,
-                  max(self._hist_row) if self._hist_row else 100)
+                  max(self._hist_rr)   if self._hist_rr   else 100,
+                  max(self._hist_row)  if self._hist_row  else 100,
+                  max(self._hist_spawn) if self._hist_spawn else 100)
         self.ax_s.set_ylim(0, top * 1.1)
 
         return (self.im, self.title, self.line_cars, self.line_spd,
-                self.line_rr, self.line_row, self.line_plat)
+                self.line_rr, self.line_row, self.line_plat, self.line_spawn)
 
     # ── Build e save ──────────────────────────────────────────────────
 

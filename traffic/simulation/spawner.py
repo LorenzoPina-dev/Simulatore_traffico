@@ -30,11 +30,23 @@ class VehicleSpawner:
         self._geo     = geo
         self._factory = factory
 
-    def spawn(self, cars: List["Vehicle"], occ: Dict) -> int:
+    def spawn(
+        self,
+        cars:      List["Vehicle"],
+        occ:       Dict,
+        enabled:   bool  = True,
+        rate_mult: float = 1.0,
+    ) -> int:
         """
         Tenta lo spawn per ogni entry point della griglia.
         Restituisce il numero di veicoli effettivamente spawnati.
+
+        enabled   : se False nessuno spawn avviene (bottone pausa)
+        rate_mult : moltiplicatore sulla probabilità base [0.25 – 4.0]
         """
+        if not enabled:
+            return 0
+
         cfg = self._cfg
         geo = self._geo
 
@@ -46,7 +58,8 @@ class VehicleSpawner:
         spawned = 0
         import random
         for r, c, dr, dc, direction, forced_intent in geo.spawn_entries():
-            if random.random() >= cfg.spawn_for(direction):
+            prob = min(1.0, cfg.spawn_for(direction) * rate_mult)
+            if random.random() >= prob:
                 continue
             if (r, c) in occ:
                 continue
