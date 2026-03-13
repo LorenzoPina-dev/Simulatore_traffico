@@ -16,9 +16,34 @@ import matplotlib.animation as animation
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
 from matplotlib.text import Text
+from matplotlib.patches import FancyBboxPatch
 
 if TYPE_CHECKING:
     from .simulation import Sim
+
+from .core.types import VehicleType as _VType
+
+# ── Dimensione visiva per tipo (frazione della cella, 1.0 = cella piena) ──
+_VSIZE = {
+    _VType.MOTORCYCLE: 0.38,
+    _VType.CAR:        0.55,
+    _VType.VAN:        0.65,
+    _VType.BUS:        0.80,
+    _VType.EMERGENCY:  0.60,
+}
+_VSIZE_DEFAULT = 0.55
+
+# Colore di fill per tipo / velocità
+_VCOLOR_TYPE = {
+    _VType.MOTORCYCLE: "#00b4d8",
+    _VType.VAN:        "#457b9d",
+    _VType.BUS:        "#1d3557",
+    _VType.EMERGENCY:  "#ff2020",
+}
+
+# Offset pull-over (spostamento laterale verso il bordo destro della corsia).
+# È espresso nella stessa unità della cella.
+_PULL_OVER_SHIFT = 0.20
 
 
 # ── Palette e legenda ─────────────────────────────────────────────────
@@ -97,6 +122,7 @@ class Renderer:
         self._ipr_texts:   List[Text] = []
         self._block_texts: List[Text] = []
         self._stop_texts:  List[Text] = []
+        self._veh_patches: list        = []
 
         self._build_figure()
 
@@ -354,13 +380,51 @@ class Renderer:
 
     # ── Aggiornamento frame ───────────────────────────────────────────
 
+    def _clear_vehicle_patches(self):
+        for p in self._veh_patches:
+            p.remove()
+        self._veh_patches.clear()
+
+    @staticmethod
+    def _car_color(vtype, spd: int) -> str:
+        c = _VCOLOR_TYPE.get(vtype)
+        if c:
+            return c
+        if spd == 0: return "#e63946"
+        if spd == 1: return "#f4a261"
+        if spd <= 3: return "#ffd166"
+        return "#06d6a0"
+
+    def _draw_vehicles(self):
+        """Disegna i veicoli come rettangoli arrotondati dimensionati per tipo.
+        Pull-over=True sposta il rettangolo verso il bordo destro della corsia."""
+        for (r, c, vtype, pull_over, dr, dc, spd) in self.sim.vehicle_list():
+            size  = _VSIZE.get(vtype, _VSIZE_DEFAULT)
+            color = self._car_color(vtype, spd)
+            pad   = (1.0 - size) / 2.0
+            shift = _PULL_OVER_SHIFT if pull_over else 0.0
+            if   dc == +1: ro, co = +shift, 0.0
+            elif dc == -1: ro, co = -shift, 0.0
+            elif dr == +1: ro, co =  0.0, +shift
+            else:          ro, co =  0.0, -shift
+            rect = FancyBboxPatch(
+                (c - 0.5 + pad + co, r - 0.5 + pad + ro),
+                size, size,
+                boxstyle="round,pad=0.03",
+                linewidth=0, facecolor=color, alpha=0.95, zorder=3,
+            )
+            self.ax.add_patch(rect)
+            self._veh_patches.append(rect)
+
     def update_frame(self, frame: int):
         """Callback FuncAnimation."""
         self.sim.update()
         s = self.sim.stats()
 
-        # Griglia
+        # Griglia infrastruttura + veicoli come patch dimensionate
         self.im.set_array(self.sim.render_grid())
+        self._clear_vehicle_patches()
+        self._draw_vehicles()
         if getattr(self.sim, "debug", False):
             self._draw_ipr_reservations()
             self._draw_entry_blocks()

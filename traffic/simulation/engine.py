@@ -217,6 +217,20 @@ class SimEngine:
         gap = ctx.gap_calc.gap_ahead(car, ctx.occ, ctx.obs_set, extra)
         car.spd = min(car.spd, gap)
 
+        # ── j+) Emergenza: bypassa i veicoli in cedenza per calcolare la velocità reale
+        # I veicoli normali che si sono fermati/spostati (pull_over=True) non devono
+        # bloccare il mezzo di emergenza. Si usa una occ temporanea che li esclude.
+        if car.vtype == _VehicleType.EMERGENCY and car.siren:
+            occ_no_yield = {
+                pos: v for pos, v in ctx.occ.items()
+                if not getattr(v, 'pull_over', False)
+            }
+            gap_em = ctx.gap_calc.gap_ahead(car, occ_no_yield, ctx.obs_set, extra)
+            em_spd = min(gap_em, car.ms)
+            if em_spd > car.spd:
+                car.spd     = em_spd
+                car.v_float = float(em_spd)
+
         # ── k) Frustrazione autonoma ──────────────────────────────────
         car.update_frustration(ctx.cfg)
 
@@ -236,42 +250,55 @@ class SimEngine:
         """
         Calcola le celle virtuali bloccate da:
             - semaforo rosso
-            - precedenza ROW
-            - mancanza prenotazione IPR (entry block)
+            - precedenza ROW  (saltata per emergenze con sirena)
+            - cedenza a veicoli di emergenza (solo per veicoli normali)
+            - mancanza prenotazione IPR  (emergenze entrano sempre)
         """
         geo = ctx.geo
+        is_siren = (car.vtype == _VehicleType.EMERGENCY and car.siren)
 
-        # Semaforo
+        # ── Semaforo ──────────────────────────────────────────────────
+        # red_block_cells restituisce set() per i veicoli con sirena attiva
         extra = ctx.light.red_block_cells(car, ctx.step, geo)
-        # Conta il passaggio col rosso solo se: (a) il semaforo è rosso per
-        # questo veicolo, (b) il campionamento è stato fatto questo step,
-        # (c) il guidatore ha deciso di ignorare il rosso (_rr_val == True).
-        # Senza la guardia sul semaforo, _rr_val residuo da step precedenti
-        # (quando era già rosso) verrebbe contato più volte.
         if (not ctx.light.go_for(car)
                 and car._rr_step == ctx.step
                 and car._rr_val):
             self._stats.total_red_runners += 1
 
-        # ROW (solo senza semaforo verde)
-        if not car.in_inter:
+        # ── ROW — i veicoli di emergenza con sirena ignorano la precedenza ──
+        if not car.in_inter and not is_siren:
             apply_row = (ctx.cfg.light_policy == LightPolicy.NO_LIGHT or not ctx.light.go_for(car))
             if apply_row:
                 if ctx.row_checker.should_yield(car, ctx.occ_snap, ctx.step):
                     extra |= ctx.row_checker.yield_block_cell(car)
                     self._stats.total_row_yields += 1
                 elif (
-                    car._row_step == ctx.step   # valutato questo step
-                    and not car._row_val         # ha deciso di NON cedere
-                    and car.t_stop < 25          # non è un deadlock-break legittimo
+                    car._row_step == ctx.step
+                    and not car._row_val
+                    and car.t_stop < 25
                     and ctx.row_checker.oncoming_threat(car, ctx.occ_snap)
                 ):
-                    # Il veicolo aveva una minaccia reale e ha scelto di ignorarla
                     self._stats.total_row_violations += 1
 
-        # IPR entry block — non prenotare se il semaforo è rosso
-        light_go = ctx.light.go_for(car)
-        if not car.in_inter and light_go and not (extra & ctx.row_checker.yield_block_cell(car)):
+        # ── Cedenza emergenza: veicoli normali si spostano e si fermano ──
+        # La mossa laterale (“pull right”) è già avvenuta in decide_lane_change.
+        # Qui aggiungiamo il blocco sulla cella avanti per fermare il veicolo.
+        if not car.in_inter and not is_siren:
+            pb = car._pull_over_b
+            if pb is not None and pb.should_pull_over(car, ctx):
+                car.pull_over = True
+                block_r = car.r + car.dr
+                block_c = car.c + car.dc
+                if geo.in_bounds(block_r, block_c):
+                    extra.add((block_r, block_c))
+            else:
+                car.pull_over = False
+
+        # ── IPR entry block — emergenze entrano sempre (ignorano rosso) ──
+        light_go    = ctx.light.go_for(car)
+        can_ipr     = light_go or is_siren   # sirena ⇒ bypassa semaforo rosso
+        yield_cells = ctx.row_checker.yield_block_cell(car)
+        if not car.in_inter and can_ipr and not (extra & yield_cells):
             entry_block, entered = self._ipr.try_enter(car, ctx.occ_snap, ctx.obs_set)
             if entered:
                 self._ipr.advance(car, ctx.occ)
@@ -427,23 +454,8 @@ class SimEngine:
             if geo.in_bounds(o.r, o.c):
                 g[o.r, o.c] = 7
 
-        # Veicoli — colore dipende dal tipo (moto/van/bus/emergenza) o dalla velocità
-        _VTYPE_COLOR = {
-            _VehicleType.MOTORCYCLE: 14,
-            _VehicleType.VAN:        15,
-            _VehicleType.BUS:        16,
-            _VehicleType.EMERGENCY:  17,
-        }
-        for car in self.cars:
-            if not geo.in_bounds(car.r, car.c):
-                continue
-            special = _VTYPE_COLOR.get(car.vtype)
-            if special is not None:
-                g[car.r, car.c] = special
-            elif car.spd == 0: g[car.r, car.c] = 3
-            elif car.spd == 1: g[car.r, car.c] = 4
-            elif car.spd <= 3: g[car.r, car.c] = 5
-            else:              g[car.r, car.c] = 6
+        # Veicoli non più dipinti qui:
+        # il renderer disegna rettangoli dimensionati via vehicle_list()
 
         # Celle prenotate IPR (solo debug)
         if self.debug and self._ipr._cell_res:
@@ -454,6 +466,18 @@ class SimEngine:
                 g[r, c] = 20 if (r, c) in occ_pos else 19
 
         return g
+
+    def vehicle_list(self) -> list:
+        """
+        Restituisce la lista dei veicoli per il renderer con rettangoli dimensionati.
+        Ogni elemento: (r, c, vtype, pull_over, dr, dc, spd)
+        """
+        geo = self.geo
+        return [
+            (c.r, c.c, c.vtype, getattr(c, 'pull_over', False), c.dr, c.dc, c.spd)
+            for c in self.cars
+            if geo.in_bounds(c.r, c.c)
+        ]
 
     def reservation_map(self) -> Dict[Tuple[int, int], int]:
         """Mappa cella->id veicolo per le prenotazioni IPR (snapshot)."""

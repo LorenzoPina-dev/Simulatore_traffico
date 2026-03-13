@@ -107,25 +107,13 @@ class TrafficLight:
 
     def emergency_preempt(self, cars: List["Vehicle"], geo: "GridGeometry"):
         """
-        Se un veicolo di emergenza con sirena è vicino all'incrocio,
-        forza il verde nella sua direzione di marcia.
+        Preemption semaforo DISABILITATA: il semaforo mantiene il suo ciclo
+        normale anche in presenza di mezzi di emergenza. È compito delle
+        altre auto spostarsi e cedere il passo (logica in engine.py).
+        Il mezzo di emergenza ignora autonomamente il rosso via red_block_cells
+        e bypassa il controllo IPR/ROW in _compute_extra_blocks.
         """
-        if self._policy in (LightPolicy.NO_LIGHT,
-                            LightPolicy.ALWAYS_GREEN_H,
-                            LightPolicy.ALWAYS_GREEN_V):
-            return
-
-        for car in cars:
-            if car.vtype != VehicleType.EMERGENCY or not car.siren:
-                continue
-            dist = self._dist_to_intersection(car, geo)
-            if dist > self._preempt_dist:
-                continue
-            target = "HG" if car.dc != 0 else "VG"
-            if self._phase != target:
-                self._phase = target
-                self._t     = 0
-            break
+        return
 
     @staticmethod
     def _dist_to_intersection(car: "Vehicle", geo: "GridGeometry") -> int:

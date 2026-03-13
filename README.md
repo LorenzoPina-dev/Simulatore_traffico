@@ -22,7 +22,7 @@ precedenze (ROW), percorsi con prenotazione (IPR), sorpassi e profili di guida.
 
 ## 1. Anteprima
 
-![Simulazione incrocio a +](traffic_simulation_intersection.gif)
+![Simulazione incrocio a +](out_default.gif)
 
 ---
 
