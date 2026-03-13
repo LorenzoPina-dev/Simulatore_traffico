@@ -83,9 +83,9 @@ class IntersectionPathReservation:
 
         entry_cell = self._entry_cell(vehicle)
 
-        # Se lontano dall'ingresso, blocca solo la entry cell
+        # Se lontano dall'ingresso, non bloccare: lascia avanzare fino alla stop line
         if dist > 1:
-            return {entry_cell}, False
+            return set(), False
 
         # ── Don't block the box ───────────────────────────────────────
         if self._exit_is_blocked(ex_r, ex_c, ex_dr, ex_dc, occ_snap, obs_set):
@@ -166,6 +166,31 @@ class IntersectionPathReservation:
     def tick_exit_wait(self, vehicle_id: int):
         self._exit_wait[vehicle_id] = self._exit_wait.get(vehicle_id, 0) + 1
 
+    # Debug helpers (no side effects)
+    def dist_to_entry(self, vehicle: "Vehicle") -> int:
+        return self._dist_to_entry(vehicle)
+
+    def entry_cell(self, vehicle: "Vehicle") -> Tuple[int, int]:
+        return self._entry_cell(vehicle)
+
+    def exit_blocked(self, vehicle: "Vehicle", occ_snap: Dict, obs_set: Set) -> bool:
+        path, ex_r, ex_c, ex_dr, ex_dc = self._compute_path(vehicle)
+        if not path:
+            return False
+        return self._exit_is_blocked(ex_r, ex_c, ex_dr, ex_dc, occ_snap, obs_set)
+
+    def reservation_conflict(self, vehicle: "Vehicle") -> bool:
+        """True se il percorso ha celle già prenotate da altri veicoli."""
+        path, _, _, _, _ = self._compute_path(vehicle)
+        if not path:
+            return False
+        vid = vehicle.id
+        for cell in path:
+            owner = self._cell_res.get(cell)
+            if owner is not None and owner != vid:
+                return True
+        return False
+
     # ─────────────────────────────────────────────────────────────────
     # Calcolo percorso
     # ─────────────────────────────────────────────────────────────────
@@ -176,67 +201,92 @@ class IntersectionPathReservation:
         intent = vehicle.intent
         ir0 = geo.ir0; ir1 = geo.ir1
         ic0 = geo.ic0; ic1 = geo.ic1
-        cr  = geo.center_r; cc = geo.center_c
 
         cells: List[Tuple[int,int]] = []
+        ex_r = ex_c = ex_dr = ex_dc = 0
+
+        def _lane_row(direction_dc: int, lane_idx: int) -> int:
+            return (ir1 - lane_idx) if direction_dc == 1 else (ir0 + lane_idx)
+
+        def _lane_col(direction_dr: int, lane_idx: int) -> int:
+            return (ic0 + lane_idx) if direction_dr == 1 else (ic1 - lane_idx)
+
+        def _exit_lane_idx() -> int:
+            lanes = geo.lanes_for_direction(ex_dr, ex_dc)
+            if lanes <= 0:
+                return 0
+            if intent == "right":
+                return 0
+            if intent == "left":
+                return lanes - 1
+            return max(0, min(vehicle.li, lanes - 1))
 
         if dc == 1:
-            er = vehicle.r
+            er = _lane_row(1, min(vehicle.li, geo.lanes_for_direction(0, 1) - 1))
             if intent == "straight":
-                for c in range(ic0, ic1+1): cells.append((er, c))
-                ex_r, ex_c, ex_dr, ex_dc = er, ic1+1, 0, 1
+                for c in range(ic0, ic1 + 1): cells.append((er, c))
+                ex_dr, ex_dc = 0, 1
             elif intent == "right":
-                for c in range(ic0, ic1+1): cells.append((er, c))
-                for r in range(er+1, ir1+1): cells.append((r, ic1))
-                ex_r, ex_c, ex_dr, ex_dc = ir1+1, ic1, 1, 0
+                ex_dr, ex_dc = 1, 0
+                ec = _lane_col(1, _exit_lane_idx())
+                for c in range(ic0, ec + 1): cells.append((er, c))
+                for r in range(er + 1, ir1 + 1): cells.append((r, ec))
             else:
-                for c in range(ic0, cc+1): cells.append((er, c))
-                for r in range(er-1, ir0-1, -1): cells.append((r, cc))
-                ex_r, ex_c, ex_dr, ex_dc = ir0-1, cc, -1, 0
+                ex_dr, ex_dc = -1, 0
+                ec = _lane_col(-1, _exit_lane_idx())
+                for c in range(ic0, ec + 1): cells.append((er, c))
+                for r in range(er - 1, ir0 - 1, -1): cells.append((r, ec))
 
         elif dc == -1:
-            er = vehicle.r
+            er = _lane_row(-1, min(vehicle.li, geo.lanes_for_direction(0, -1) - 1))
             if intent == "straight":
-                for c in range(ic1, ic0-1, -1): cells.append((er, c))
-                ex_r, ex_c, ex_dr, ex_dc = er, ic0-1, 0, -1
+                for c in range(ic1, ic0 - 1, -1): cells.append((er, c))
+                ex_dr, ex_dc = 0, -1
             elif intent == "right":
-                for c in range(ic1, ic0-1, -1): cells.append((er, c))
-                for r in range(er-1, ir0-1, -1): cells.append((r, ic0))
-                ex_r, ex_c, ex_dr, ex_dc = ir0-1, ic0, -1, 0
+                ex_dr, ex_dc = -1, 0
+                ec = _lane_col(-1, _exit_lane_idx())
+                for c in range(ic1, ec - 1, -1): cells.append((er, c))
+                for r in range(er - 1, ir0 - 1, -1): cells.append((r, ec))
             else:
-                for c in range(ic1, cc-1, -1): cells.append((er, c))
-                for r in range(er+1, ir1+1): cells.append((r, cc-1))
-                ex_r, ex_c, ex_dr, ex_dc = ir1+1, cc-1, 1, 0
+                ex_dr, ex_dc = 1, 0
+                ec = _lane_col(1, _exit_lane_idx())
+                for c in range(ic1, ec - 1, -1): cells.append((er, c))
+                for r in range(er + 1, ir1 + 1): cells.append((r, ec))
 
         elif dr == 1:
-            ec = vehicle.c
+            ec = _lane_col(1, min(vehicle.li, geo.lanes_for_direction(1, 0) - 1))
             if intent == "straight":
-                for r in range(ir0, ir1+1): cells.append((r, ec))
-                ex_r, ex_c, ex_dr, ex_dc = ir1+1, ec, 1, 0
+                for r in range(ir0, ir1 + 1): cells.append((r, ec))
+                ex_dr, ex_dc = 1, 0
             elif intent == "right":
-                for r in range(ir0, ir1+1): cells.append((r, ec))
-                for c in range(ec-1, ic0-1, -1): cells.append((ir1, c))
-                ex_r, ex_c, ex_dr, ex_dc = ir1, ic0-1, 0, -1
+                ex_dr, ex_dc = 0, -1
+                er = _lane_row(-1, _exit_lane_idx())
+                for r in range(ir0, er + 1): cells.append((r, ec))
+                for c in range(ec - 1, ic0 - 1, -1): cells.append((er, c))
             else:
-                for r in range(ir0, cr+1): cells.append((r, ec))
-                for c in range(ec+1, ic1+1): cells.append((cr, c))
-                ex_r, ex_c, ex_dr, ex_dc = cr, ic1+1, 0, 1
+                ex_dr, ex_dc = 0, 1
+                er = _lane_row(1, _exit_lane_idx())
+                for r in range(ir0, er + 1): cells.append((r, ec))
+                for c in range(ec + 1, ic1 + 1): cells.append((er, c))
 
         else:  # dr == -1
-            ec = vehicle.c
+            ec = _lane_col(-1, min(vehicle.li, geo.lanes_for_direction(-1, 0) - 1))
             if intent == "straight":
-                for r in range(ir1, ir0-1, -1): cells.append((r, ec))
-                ex_r, ex_c, ex_dr, ex_dc = ir0-1, ec, -1, 0
+                for r in range(ir1, ir0 - 1, -1): cells.append((r, ec))
+                ex_dr, ex_dc = -1, 0
             elif intent == "right":
-                for r in range(ir1, ir0-1, -1): cells.append((r, ec))
-                for c in range(ec+1, ic1+1): cells.append((ir0, c))
-                ex_r, ex_c, ex_dr, ex_dc = ir0, ic1+1, 0, 1
+                ex_dr, ex_dc = 0, 1
+                er = _lane_row(1, _exit_lane_idx())
+                for r in range(ir1, er - 1, -1): cells.append((r, ec))
+                for c in range(ec + 1, ic1 + 1): cells.append((er, c))
             else:
-                for r in range(ir1, cr-1, -1): cells.append((r, ec))
-                for c in range(ec-1, ic0-1, -1): cells.append((cr, c))
-                ex_r, ex_c, ex_dr, ex_dc = cr, ic0-1, 0, -1
+                ex_dr, ex_dc = 0, -1
+                er = _lane_row(-1, _exit_lane_idx())
+                for r in range(ir1, er - 1, -1): cells.append((r, ec))
+                for c in range(ec - 1, ic0 - 1, -1): cells.append((er, c))
 
         cells = [(r, c) for (r, c) in cells if geo.in_bounds(r, c)]
+        ex_r, ex_c = self._exit_cell_for_lane(vehicle, ex_dr, ex_dc)
         return tuple(cells), ex_r, ex_c, ex_dr, ex_dc
 
     # ─────────────────────────────────────────────────────────────────
@@ -274,6 +324,20 @@ class IntersectionPathReservation:
             if blocker is not None and blocker.spd == 0:
                 return True
         return False
+
+    def _exit_cell_for_lane(self, vehicle: "Vehicle", ex_dr: int, ex_dc: int) -> Tuple[int, int]:
+        geo = self._geo
+        lanes = geo.lanes_for_direction(ex_dr, ex_dc)
+        if lanes <= 0:
+            return (vehicle.r, vehicle.c)
+        li = max(0, min(vehicle.li, lanes - 1))
+        if ex_dc == 1:
+            return (geo.ir1 - li, geo.ic1 + 1)
+        if ex_dc == -1:
+            return (geo.ir0 + li, geo.ic0 - 1)
+        if ex_dr == 1:
+            return (geo.ir1 + 1, geo.ic0 + li)
+        return (geo.ir0 - 1, geo.ic1 - li)
 
     def _reserve(self, vehicle: "Vehicle", path: tuple) -> bool:
         obs_s = set()   # ostacoli già verificati in try_enter

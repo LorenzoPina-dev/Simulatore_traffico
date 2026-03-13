@@ -50,7 +50,14 @@ class IDMBehavior(MovementBehavior):
         gap    = context.gap_calc.gap_ahead(vehicle, context.occ, context.obs_set, extra)
         v_lead = context.gap_calc.leader_speed(vehicle, context.occ, context.obs_set, extra, gap)
 
-        acc = self._idm_accel(vehicle, float(max(0, gap)), v_lead, cfg.idm_delta)
+        s_gap = float(max(0, gap))
+        if (not context.light.go_for(vehicle)
+                and not vehicle.in_inter
+                and not vehicle.inter_path
+                and not vehicle.slip_path):
+            acc = self._idm_accel_override(vehicle, s_gap, v_lead, cfg.idm_delta, s0=0.0, T=0.0)
+        else:
+            acc = self._idm_accel(vehicle, s_gap, v_lead, cfg.idm_delta)
 
         # Aggiorna la velocità continua
         new_v = max(0.0, vehicle.v_float + acc)
@@ -87,6 +94,30 @@ class IDMBehavior(MovementBehavior):
         dv  = v - v_lead
 
         sqrt_ab = math.sqrt(max(1e-6, a_max * b))
+        s_star  = s0 + max(0.0, v * T + v * dv / (2.0 * sqrt_ab))
+
+        free_road   = (v / v0) ** delta if v0 > 0 else 1.0
+        interaction = (s_star / s) ** 2
+
+        acc = a_max * (1.0 - free_road - interaction)
+        return max(-2.0 * b, min(acc, a_max))
+
+    @staticmethod
+    def _idm_accel_override(
+        vehicle: "Vehicle", gap: float, v_lead: float, delta: int, s0: float, T: float
+    ) -> float:
+        v     = vehicle.v_float
+        v0    = vehicle.v_desired
+        a_max = vehicle.idm_a
+        b     = vehicle.idm_b
+
+        if v0 <= 0.0:
+            return -a_max
+
+        s   = max(0.001, gap)
+        dv  = v - v_lead
+
+        sqrt_ab = (a_max * b) ** 0.5 if a_max * b > 1e-6 else 1e-3
         s_star  = s0 + max(0.0, v * T + v * dv / (2.0 * sqrt_ab))
 
         free_road   = (v / v0) ** delta if v0 > 0 else 1.0

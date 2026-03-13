@@ -65,6 +65,7 @@ class SimEngine:
         self.cfg   = cfg
         self.geo   = GridGeometry(cfg)
         self.light = TrafficLight(cfg, self.geo)
+        self.debug = False
 
         # Veicoli e ostacoli
         self.cars:     List[Vehicle]  = []
@@ -444,7 +445,98 @@ class SimEngine:
             elif car.spd <= 3: g[car.r, car.c] = 5
             else:              g[car.r, car.c] = 6
 
+        # Celle prenotate IPR (solo debug)
+        if self.debug and self._ipr._cell_res:
+            occ_pos = {(c.r, c.c) for c in self.cars if geo.in_bounds(c.r, c.c)}
+            for (r, c), _vid in self._ipr._cell_res.items():
+                if not geo.in_bounds(r, c):
+                    continue
+                g[r, c] = 20 if (r, c) in occ_pos else 19
+
         return g
+
+    def reservation_map(self) -> Dict[Tuple[int, int], int]:
+        """Mappa cella->id veicolo per le prenotazioni IPR (snapshot)."""
+        return dict(self._ipr._cell_res) if self.debug else {}
+
+    def debug_entry_blocks(self) -> List[Tuple[int, int, str, int]]:
+        """
+        Debug: celle di ingresso bloccate con motivo (RED/ROW/EXIT/IPR/OCC/PRE).
+        Ritorna lista di (r, c, reason, vehicle_id).
+        """
+        if not self.debug:
+            return []
+        occ_snap = {(c.r, c.c): c for c in self.cars}
+        obs_set  = {(o.r, o.c) for o in self.obs}
+        out: List[Tuple[int, int, str, int]] = []
+        for car in self.cars:
+            if car.in_inter or car.inter_path or car.slip_path:
+                continue
+            dist = self._ipr.dist_to_entry(car)
+            if dist > 1:
+                er, ec = self._ipr.entry_cell(car)
+                out.append((er, ec, "PRE", car.id))
+                continue
+            er, ec = self._ipr.entry_cell(car)
+            occ_car = occ_snap.get((er, ec))
+            if occ_car is not None and occ_car is not car:
+                out.append((er, ec, "OCC", car.id))
+                continue
+            if not self.light.go_for(car):
+                out.append((er, ec, "RED", car.id))
+                continue
+            if self._row.should_yield(car, occ_snap, self.step):
+                out.append((er, ec, "ROW", car.id))
+                continue
+            if self._ipr.exit_blocked(car, occ_snap, obs_set):
+                out.append((er, ec, "EXIT", car.id))
+                continue
+            if self._ipr.reservation_conflict(car):
+                out.append((er, ec, "IPR", car.id))
+                continue
+        return out
+
+    def debug_stop_reasons(self) -> List[Tuple[int, int, str, int]]:
+        """
+        Debug: veicoli fermi con motivo principale (RED/ROW/EXIT/IPR/OCC/PRE/SAFE/DELAY).
+        Ritorna lista di (r, c, reason, vehicle_id).
+        """
+        if not self.debug:
+            return []
+        occ_snap = {(c.r, c.c): c for c in self.cars}
+        obs_set  = {(o.r, o.c) for o in self.obs}
+        out: List[Tuple[int, int, str, int]] = []
+        for car in self.cars:
+            if car.spd != 0:
+                continue
+            if car.delay > 0:
+                out.append((car.r, car.c, "DELAY", car.id))
+                continue
+            if car.inter_path or car.slip_path:
+                continue
+            if not self.light.go_for(car):
+                out.append((car.r, car.c, "RED", car.id))
+                continue
+            if self._row.should_yield(car, occ_snap, self.step):
+                out.append((car.r, car.c, "ROW", car.id))
+                continue
+            dist = self._ipr.dist_to_entry(car)
+            if dist > 1:
+                out.append((car.r, car.c, "PRE", car.id))
+                continue
+            er, ec = self._ipr.entry_cell(car)
+            occ_car = occ_snap.get((er, ec))
+            if occ_car is not None and occ_car is not car:
+                out.append((car.r, car.c, "OCC", car.id))
+                continue
+            if self._ipr.exit_blocked(car, occ_snap, obs_set):
+                out.append((car.r, car.c, "EXIT", car.id))
+                continue
+            if self._ipr.reservation_conflict(car):
+                out.append((car.r, car.c, "IPR", car.id))
+                continue
+            out.append((car.r, car.c, "SAFE", car.id))
+        return out
 
 
 # Alias per backward-compat con il vecchio nome

@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
+from matplotlib.text import Text
 
 if TYPE_CHECKING:
     from .simulation import Sim
@@ -41,7 +42,7 @@ PALETTE = [
     "#00b4d8",   # 14  moto          (azzurro chiaro)
     "#457b9d",   # 15  furgone/van   (blu acciaio)
     "#1d3557",   # 16  bus           (blu scuro)
-    "#ef233c",   # 17  emergenza     (rosso vivo)
+    "#360208",   # 17  emergenza     (rosso vivo)
     "#2d6a4f",   # 18  fermata bus   (verde scuro)
     "#ffb347",   # 19  cella prenotata (arancione chiaro)
     "#9370db",   # 20  cella occupata+prenotata (viola)
@@ -65,7 +66,7 @@ LEGEND_ITEMS = [
     "Moto",
     "Furgone (van)",
     "Bus",
-    "Emergenza 🚨",
+    "Emergenza",
     "Fermata bus",
     "Cella prenotata (IPR)",
     "Cella occupata+prenotata",
@@ -93,6 +94,9 @@ class Renderer:
         self._hist_rr:     List[float] = []
         self._hist_row:    List[float] = []
         self._hist_plat:   List[float] = []   # plotoni attivi
+        self._ipr_texts:   List[Text] = []
+        self._block_texts: List[Text] = []
+        self._stop_texts:  List[Text] = []
 
         self._build_figure()
 
@@ -231,6 +235,123 @@ class Renderer:
         for stop in self.cfg.bus_stops:
             self.ax.text(stop.col, stop.row, "B", **tkw)
 
+    def _clear_ipr_texts(self):
+        for t in self._ipr_texts:
+            t.remove()
+        self._ipr_texts.clear()
+
+    def _draw_ipr_reservations(self):
+        """Etichette con l'id veicolo sulle celle prenotate IPR."""
+        self._clear_ipr_texts()
+        res = self.sim.reservation_map()
+        if not res:
+            return
+        geo = self.geo
+        tkw = dict(
+            color="#111111",
+            fontsize=3.5,
+            ha="center",
+            va="center",
+            fontweight="bold",
+            alpha=0.9,
+        )
+        for (r, c), vid in res.items():
+            if not geo.in_bounds(r, c):
+                continue
+            if not geo.in_intersection(r, c):
+                continue
+            self._ipr_texts.append(self.ax.text(c, r, str(vid), **tkw))
+
+    def _clear_block_texts(self):
+        for t in self._block_texts:
+            t.remove()
+        self._block_texts.clear()
+
+    def _draw_entry_blocks(self):
+        """Overlay motivi di blocco ingresso (RED/ROW/EXIT)."""
+        self._clear_block_texts()
+        blocks = self.sim.debug_entry_blocks()
+        if not blocks:
+            return
+        geo = self.geo
+        colors = {
+            "RED": "#ff4d4d",
+            "ROW": "#ffd166",
+            "EXIT": "#4dabf7",
+            "IPR": "#c77dff",
+            "OCC": "#a0a0a0",
+            "PRE": "#9bf6ff",
+        }
+        for r, c, reason, _vid in blocks:
+            if not geo.in_bounds(r, c):
+                continue
+            if reason == "RED":
+                label = "R"
+            elif reason == "ROW":
+                label = "Y"
+            elif reason == "EXIT":
+                label = "X"
+            elif reason == "IPR":
+                label = "P"
+            elif reason == "OCC":
+                label = "O"
+            else:
+                label = ">"
+            tkw = dict(
+                color=colors.get(reason, "white"),
+                fontsize=4.0,
+                ha="center",
+                va="center",
+                fontweight="bold",
+                alpha=0.95,
+            )
+            self._block_texts.append(self.ax.text(c, r, label, **tkw))
+
+    def _clear_stop_texts(self):
+        for t in self._stop_texts:
+            t.remove()
+        self._stop_texts.clear()
+
+    def _draw_stop_reasons(self):
+        """Overlay motivi di stop sui veicoli fermi."""
+        self._clear_stop_texts()
+        stops = self.sim.debug_stop_reasons()
+        if not stops:
+            return
+        geo = self.geo
+        colors = {
+            "RED": "#ff4d4d",
+            "ROW": "#ffd166",
+            "EXIT": "#4dabf7",
+            "IPR": "#c77dff",
+            "OCC": "#a0a0a0",
+            "PRE": "#9bf6ff",
+            "SAFE": "#ffffff",
+            "DELAY": "#ffb347",
+        }
+        labels = {
+            "RED": "R",
+            "ROW": "Y",
+            "EXIT": "X",
+            "IPR": "P",
+            "OCC": "O",
+            "PRE": ">",
+            "SAFE": "S",
+            "DELAY": "D",
+        }
+        for r, c, reason, _vid in stops:
+            if not geo.in_bounds(r, c):
+                continue
+            tkw = dict(
+                color=colors.get(reason, "white"),
+                fontsize=4.0,
+                ha="center",
+                va="center",
+                fontweight="bold",
+                alpha=0.95,
+            )
+            self._stop_texts.append(self.ax.text(c, r, labels.get(reason, "?"), **tkw))
+
     # ── Aggiornamento frame ───────────────────────────────────────────
 
     def update_frame(self, frame: int):
@@ -240,6 +361,10 @@ class Renderer:
 
         # Griglia
         self.im.set_array(self.sim.render_grid())
+        if getattr(self.sim, "debug", False):
+            self._draw_ipr_reservations()
+            self._draw_entry_blocks()
+            self._draw_stop_reasons()
 
         # Composizione veicoli per tipo
         bt = s.get("by_type", {})
@@ -253,12 +378,15 @@ class Renderer:
         platoon_str = f"Plotoni:{s['num_platoons']}({s['in_platoon']})"
 
         compliance = s.get('row_compliance_rate', 1.0)
+        ipr_res = self.sim.reservation_map()
+        ipr_cnt = len(ipr_res)
         self.title.set_text(
             f"Step {s['step']:4d}  |  Auto:{s['cars']:3d}  [{type_str}]  "
             f"|  Vel:{s['avg_speed']:.2f}  |  Sem:{s['light_phase']}  "
             f"|  {platoon_str}  |  Acc:{s['total_acc']}  "
             f"|  Rosso:{s['total_rr']}  "
             f"|  ROW ced:{s.get('total_row_yld', 0)} viol:{s.get('total_row_vio', 0)}  "
+            f"|  WaitingROW:{s.get('waiting_row', 0)}  IPRres:{ipr_cnt}  "
             f"|  Compliance:{compliance:.0%}"
         )
 

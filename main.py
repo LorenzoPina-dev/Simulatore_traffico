@@ -111,6 +111,7 @@ def main():
     # ... codice esistente ...
     
     sim = Sim(cfg)
+    sim.debug = debug_mode
     
     if debug_mode:
         print("\n[DEBUG] Modalità debug attivata")

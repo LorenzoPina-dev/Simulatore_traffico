@@ -74,6 +74,11 @@ class RightOfWayChecker:
         if vehicle.t_stop >= _DEADLOCK_BREAK_THRESHOLD:
             vehicle._row_val = False; vehicle._row_step = step
             return False
+        if vehicle.intent == "left":
+            if self._threat_oncoming(vehicle, occ, self._cfg.row_oncoming_check):
+                vehicle._row_val = True
+                vehicle._row_step = step
+                return True
         if self._rule() == "oncoming" and vehicle.intent != "left":
             return False
 
