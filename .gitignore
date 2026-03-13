@@ -1,1 +1,2 @@
-/traffic/__pycache__
+traffic/**/__pycache__
+*.gif

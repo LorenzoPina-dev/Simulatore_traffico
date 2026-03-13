@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 
 from traffic import SCENARIOS, list_scenarios, SimConfig, Sim, Renderer
 from traffic import TopologyConfig, RoadSegment, TOPOLOGIES, list_topologies
-from traffic.config import LightPolicy, ManualObstacle
+from traffic import LightPolicy, ManualObstacle
 
 
 # =====================================================================
@@ -74,9 +74,10 @@ def select_config() -> SimConfig:
         print("[main] Uso configurazione CUSTOM definita in main.py")
         return CUSTOM
 
-    args = sys.argv[1:]
+    args = [a for a in sys.argv[1:] if not a.startswith("--") and not a.startswith("-")]
+    flags = [a for a in sys.argv[1:] if a.startswith("-")]
 
-    if "--list" in args or "-l" in args:
+    if "--list" in flags or "-l" in flags:
         print("\nScenari disponibili:")
         for name in list_scenarios():
             cfg = SCENARIOS[name]
@@ -101,18 +102,58 @@ def select_config() -> SimConfig:
 
 def main():
     cfg = select_config()
-
-    print("=" * 54)
-    print(f"  Simulatore Traffico  —  scenario: {sys.argv[1] if len(sys.argv) > 1 else 'default'}")
-    print(cfg.summary())
-    print("=" * 54)
-
-    sim      = Sim(cfg)
+    
+    # Opzioni di debug
+    debug_mode = "--debug" in sys.argv
+    print_reservations = "--print-res" in sys.argv
+    save_gif = "--save" in sys.argv
+    
+    # ... codice esistente ...
+    
+    sim = Sim(cfg)
+    
+    if debug_mode:
+        print("\n[DEBUG] Modalità debug attivata")
+        print(f"[DEBUG] Celle incrocio: rows [{sim.geo.ir0}-{sim.geo.ir1}], cols [{sim.geo.ic0}-{sim.geo.ic1}]")
+    
     renderer = Renderer(sim)
-    ani      = renderer.build_animation()
-    renderer.save(ani)
-
+    ani = renderer.build_animation()
+    
+    # Aggiungi callback per print periodico delle prenotazioni
+    if print_reservations:
+        def debug_callback(frame):
+            if frame % 50 == 0:  # stampa ogni 50 step
+                sim.print_reservations()
+        
+        # Modifica l'animazione per includere il callback
+        original_update = renderer.update_frame
+        def wrapped_update(frame):
+            debug_callback(frame)
+            return original_update(frame)
+        renderer.update_frame = wrapped_update
+    
+    print("[main] Avvio simulazione live — chiudi la finestra per uscire.")
+    if save_gif:
+        print(f"[main] Al termine verrà salvata la GIF: {cfg.output_file}")
+    if debug_mode:
+        print("[main] Premi 'p' nella finestra per stampare le prenotazioni")
+        
+        # Aggiungi handler per tasto 'p'
+        def on_key(event):
+            if event.key == 'p':
+                sim.print_reservations()
+        renderer.fig.canvas.mpl_connect('key_press_event', on_key)
+    
     plt.show()
+
+    # ── Salva GIF solo se richiesto con --save ────────────────────────
+    if save_gif:
+        print("[main] Salvataggio GIF in corso...")
+        sim2      = Sim(cfg)          # nuova istanza per ripartire da zero
+        renderer2 = Renderer(sim2)
+        ani2      = renderer2.build_animation()
+        renderer2.save(ani2)
+        plt.close(renderer2.fig)
 
 
 if __name__ == "__main__":

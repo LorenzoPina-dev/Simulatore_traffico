@@ -1,38 +1,68 @@
 """
-Pacchetto traffic — simulatore di traffico urbano a automi cellulari.
+traffic/__init__.py — Pacchetto principale.
 
-Moduli:
-    config      — SimConfig: dataclass con tutti i parametri
-    geometry    — GridGeometry: coordinate e helper geometrici
-    entities    — Personality, Car, Obstacle
-    traffic_light — TrafficLight + politiche di ciclo
-    simulation  — Sim: motore principale
-    renderer    — Renderer: visualizzazione matplotlib
-    scenarios   — configurazioni preset pronte all'uso
+Re-esporta tutto dalla nuova struttura a submoduli.
+Garantisce backward-compatibility con il codice esistente.
 """
-from .config        import SimConfig, PersonalityProfile, LightPolicy, ManualObstacle
-from .entities      import Personality, Car, Obstacle
-from .geometry      import GridGeometry, SlipEntry
-from .traffic_light import TrafficLight
-from .right_of_way  import RightOfWayChecker
-from .simulation    import Sim
-from .renderer      import Renderer
-from .scenarios     import SCENARIOS, list_scenarios
-from .topology      import TopologyConfig, RoadSegment, TOPOLOGIES, list_topologies
+# Core
+from .core.types     import VehicleType, LightPolicy, Personality
+from .core.constants import VEHICLE_LENGTH, IDM_BASE
+from .core.config    import (
+    SimConfig, PersonalityProfile, DEFAULT_PROFILES,
+    VehicleTypeWeights, BusStop, ManualObstacle,
+)
+# World
+from .world.geometry import GridGeometry, SlipEntry
+from .world.topology import TopologyConfig, RoadSegment, TOPOLOGIES, list_topologies
+# Agents
+from .agents.vehicle  import Vehicle, Car
+from .agents.obstacle import Obstacle
+from .agents.platoon  import Platoon
+from .agents.factory  import VehicleFactory
+# Infrastructure
+from .infrastructure.gap_calculator import GapCalculator
+from .infrastructure.ipr            import IntersectionPathReservation
+from .infrastructure.traffic_light  import TrafficLight
+from .infrastructure.right_of_way   import RightOfWayChecker
+# Behaviors
+from .behaviors import (
+    MovementBehavior, LaneChangeBehavior, StopBehavior, PullOverBehavior,
+    IDMBehavior, NaSchBehavior,
+    MOBILBehavior, HeuristicLaneBehavior,
+    BusStopBehavior, NullStopBehavior,
+    EmergencyPullOverBehavior, NullPullOverBehavior,
+)
+# Simulation
+from .simulation.engine  import SimEngine, Sim
+from .simulation.context import SimContext
+# Renderer
+from .renderer import Renderer
+# Scenarios
+from .scenarios import SCENARIOS, list_scenarios
 
 __all__ = [
-    # Config
-    "SimConfig", "PersonalityProfile", "LightPolicy", "ManualObstacle",
-    # Topology
-    "TopologyConfig", "RoadSegment", "TOPOLOGIES", "list_topologies",
-    # Entities
-    "Personality", "Car", "Obstacle",
-    # Geometry
-    "GridGeometry", "SlipEntry",
     # Core
-    "TrafficLight",
-    "RightOfWayChecker",
-    "Sim",
+    "VehicleType", "LightPolicy", "Personality",
+    "VEHICLE_LENGTH", "IDM_BASE",
+    "SimConfig", "PersonalityProfile", "DEFAULT_PROFILES",
+    "VehicleTypeWeights", "BusStop", "ManualObstacle",
+    # World
+    "GridGeometry", "SlipEntry",
+    "TopologyConfig", "RoadSegment", "TOPOLOGIES", "list_topologies",
+    # Agents
+    "Vehicle", "Car", "Obstacle", "Platoon", "VehicleFactory",
+    # Infrastructure
+    "GapCalculator", "IntersectionPathReservation",
+    "TrafficLight", "RightOfWayChecker",
+    # Behaviors
+    "MovementBehavior", "LaneChangeBehavior", "StopBehavior", "PullOverBehavior",
+    "IDMBehavior", "NaSchBehavior",
+    "MOBILBehavior", "HeuristicLaneBehavior",
+    "BusStopBehavior", "NullStopBehavior",
+    "EmergencyPullOverBehavior", "NullPullOverBehavior",
+    # Simulation
+    "SimEngine", "Sim", "SimContext",
+    # Renderer
     "Renderer",
     # Scenarios
     "SCENARIOS", "list_scenarios",
