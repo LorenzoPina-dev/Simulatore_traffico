@@ -233,7 +233,7 @@ class Renderer:
         )
 
         # ── Barra controlli spawn ───────────────────────────────────────────
-        _bkw = dict(facecolor="#1e1e30", edgecolor="#555")
+        _bkw = dict(color="#1e1e30")
 
         ax_btn_tog  = self.fig.add_axes([0.04, 0.02, 0.24, 0.07])
         ax_btn_down = self.fig.add_axes([0.32, 0.02, 0.13, 0.07])

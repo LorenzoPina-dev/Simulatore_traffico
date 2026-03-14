@@ -139,9 +139,9 @@ class SimConfig:
 
     # ── Semaforo ──────────────────────────────────────────────────────
     light_policy:            LightPolicy = LightPolicy.FIXED
-    light_green_h:           int         = 120
-    light_green_v:           int         = 120
-    light_yellow:            int         = 18
+    light_green_h:           int         = 60
+    light_green_v:           int         = 60
+    light_yellow:            int         = 9
     adaptive_check_interval: int         = 15
     light_min_green:         int         = 25
     light_max_green:         int         = 150
