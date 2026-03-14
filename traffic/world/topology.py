@@ -83,6 +83,10 @@ class TopologyConfig:
         "right"    — precedenza a destra (regola italiana)
         "left"     — precedenza a sinistra (rotatoria)
         "oncoming" — solo chi gira a sinistra cede
+    roundabout:
+        True  — usa logica di rotatoria (percorso ad anello in IPR/render)
+    roundabout_lanes:
+        numero di corsie nell'anello della rotatoria
     """
     name:              str         = "plus"
     west:  RoadSegment = field(default_factory=RoadSegment)
@@ -95,6 +99,8 @@ class TopologyConfig:
     slip_len:           int  = 5
     slip_exclusive:     bool = True
     row_yield_to:       str  = "right"
+    roundabout:         bool = False
+    roundabout_lanes:   int  = 1
 
     def arm(self, name: str) -> RoadSegment:
         return getattr(self, name)
@@ -220,7 +226,7 @@ TOPOLOGIES: dict[str, TopologyConfig] = {
     "T_slip": TopologyConfig(name="T_slip", north=_seg(enabled=False),
                              slip_lanes_enabled=True, slip_len=5, slip_exclusive=True),
 
-    "roundabout":       TopologyConfig(name="roundabout",       row_yield_to="left"),
+    "roundabout":       TopologyConfig(name="roundabout",       row_yield_to="left", roundabout=True),
     "yield_to_main":    TopologyConfig(
         name="yield_to_main",
         west=_seg(lanes_inbound=4, label="main"), east=_seg(lanes_inbound=4, label="main"),

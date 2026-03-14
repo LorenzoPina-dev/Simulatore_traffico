@@ -117,10 +117,11 @@ class TrafficLight:
 
     @staticmethod
     def _dist_to_intersection(car: "Vehicle", geo: "GridGeometry") -> int:
-        if car.dc == 1:   return max(0, geo.ic0 - car.c)
-        if car.dc == -1:  return max(0, car.c - geo.ic1)
-        if car.dr == 1:   return max(0, geo.ir0 - car.r)
-        return                   max(0, car.r - geo.ir1)
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
+        if car.dc == 1:   return max(0, ic0 - car.c)
+        if car.dc == -1:  return max(0, car.c - ic1)
+        if car.dr == 1:   return max(0, ir0 - car.r)
+        return                   max(0, car.r - ir1)
 
     # ── Stato ─────────────────────────────────────────────────────────
 
@@ -171,7 +172,8 @@ class TrafficLight:
             return set()
 
         r, c = vehicle.r, vehicle.c
-        if vehicle.dc == 1:   return {(r, geo.ic0 - 1)}
-        if vehicle.dc == -1:  return {(r, geo.ic1 + 1)}
-        if vehicle.dr == 1:   return {(geo.ir0 - 1, c)}
-        return {(geo.ir1 + 1, c)}
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
+        if vehicle.dc == 1:   return {(r, ic0 - 1)}
+        if vehicle.dc == -1:  return {(r, ic1 + 1)}
+        if vehicle.dr == 1:   return {(ir0 - 1, c)}
+        return {(ir1 + 1, c)}

@@ -71,10 +71,53 @@ class GridGeometry:
             cell for e in self._slip_entries for cell in e.path
         }
 
+        # Roundabout (rotatoria)
+        self.roundabout = bool(getattr(topo, "roundabout", False))
+        self.roundabout_lanes = max(1, int(getattr(topo, "roundabout_lanes", 1)))
+        # Dimensione desiderata dell'anello: 1->5x5, 2->7x7, 3->9x9, 4->11x11
+        # (sempre 3x3 centrale libero)
+        self.roundabout_size_target = 2 * self.roundabout_lanes + 3
+        self.roundabout_size = 0
+        self._rb_ir0 = self._rb_ir1 = 0
+        self._rb_ic0 = self._rb_ic1 = 0
+        self.roundabout_ring_count = 0
+        self._roundabout_paths: List[List[Tuple[int, int]]] = []
+        self._roundabout_index: List[Dict[Tuple[int, int], int]] = []
+        self._roundabout_cells: Set[Tuple[int, int]] = set()
+        if self.roundabout:
+            max_size = self.size if (self.size % 2 == 1) else self.size - 1
+            if max_size < 3:
+                max_size = 3
+            self.roundabout_size = min(max(3, self.roundabout_size_target), max_size)
+            # L'anello può espandersi oltre il quadrato dell'incrocio
+            self._rb_ir0, self._rb_ir1 = self._fit_range(
+                self.center_r, self.roundabout_size, 0, self.size - 1
+            )
+            self._rb_ic0, self._rb_ic1 = self._fit_range(
+                self.center_c, self.roundabout_size, 0, self.size - 1
+            )
+
+            self._roundabout_paths = self._compute_roundabout_paths()
+            self._roundabout_index = [
+                {cell: idx for idx, cell in enumerate(path)}
+                for path in self._roundabout_paths
+            ]
+            self._roundabout_cells = {
+                cell for path in self._roundabout_paths for cell in path
+            }
+            self.roundabout_ring_count = len(self._roundabout_paths)
+
     # ── Query spaziali ────────────────────────────────────────────────
 
+    def intersection_bounds(self) -> Tuple[int, int, int, int]:
+        """Bounds dell'area d'intersezione (rotatoria inclusa)."""
+        if self.roundabout:
+            return self._rb_ir0, self._rb_ir1, self._rb_ic0, self._rb_ic1
+        return self.ir0, self.ir1, self.ic0, self.ic1
+
     def in_intersection(self, r: int, c: int) -> bool:
-        return self.ir0 <= r <= self.ir1 and self.ic0 <= c <= self.ic1
+        ir0, ir1, ic0, ic1 = self.intersection_bounds()
+        return ir0 <= r <= ir1 and ic0 <= c <= ic1
 
     def on_road(self, r: int, c: int) -> bool:
         return (self.ir0 <= r <= self.ir1) or (self.ic0 <= c <= self.ic1)
@@ -140,43 +183,153 @@ class GridGeometry:
 
     def spawn_entries(self) -> Iterator[Tuple[int, int, int, int, str, Optional[str]]]:
         topo = self.topo
+        rb_ir0 = self._rb_ir0; rb_ir1 = self._rb_ir1
+        rb_ic0 = self._rb_ic0; rb_ic1 = self._rb_ic1
+        rb_on  = self.roundabout
         if topo.west.enabled:
             total = self.lanes_east
-            yield (self.ir1, 0, 0, 1, "east", topo.west.forced_intent(0, total))
+            if not rb_on or (rb_ir0 <= self.ir1 <= rb_ir1):
+                yield (self.ir1, 0, 0, 1, "east", topo.west.forced_intent(0, total))
             for r in range(self.center_r, self.ir1):
                 li = self.ir1 - r
                 fi = topo.west.forced_intent(li, total)
-                if fi is not None: yield (r, 0, 0, 1, "east", fi)
+                if fi is not None and (not rb_on or (rb_ir0 <= r <= rb_ir1)):
+                    yield (r, 0, 0, 1, "east", fi)
         if topo.east.enabled:
             total = self.lanes_west
-            yield (self.ir0, self.size - 1, 0, -1, "west", topo.east.forced_intent(0, total))
+            if not rb_on or (rb_ir0 <= self.ir0 <= rb_ir1):
+                yield (self.ir0, self.size - 1, 0, -1, "west", topo.east.forced_intent(0, total))
             for r in range(self.ir0 + 1, self.center_r):
                 li = r - self.ir0
                 fi = topo.east.forced_intent(li, total)
-                if fi is not None: yield (r, self.size - 1, 0, -1, "west", fi)
+                if fi is not None and (not rb_on or (rb_ir0 <= r <= rb_ir1)):
+                    yield (r, self.size - 1, 0, -1, "west", fi)
         if topo.north.enabled:
             total = self.lanes_south
-            yield (0, self.ic0, 1, 0, "south", topo.north.forced_intent(0, total))
+            if not rb_on or (rb_ic0 <= self.ic0 <= rb_ic1):
+                yield (0, self.ic0, 1, 0, "south", topo.north.forced_intent(0, total))
             for c in range(self.ic0 + 1, self.center_c):
                 li = c - self.ic0
                 fi = topo.north.forced_intent(li, total)
-                if fi is not None: yield (0, c, 1, 0, "south", fi)
+                if fi is not None and (not rb_on or (rb_ic0 <= c <= rb_ic1)):
+                    yield (0, c, 1, 0, "south", fi)
         if topo.south.enabled:
             total = self.lanes_north
-            yield (self.size - 1, self.ic1, -1, 0, "north", topo.south.forced_intent(0, total))
+            if not rb_on or (rb_ic0 <= self.ic1 <= rb_ic1):
+                yield (self.size - 1, self.ic1, -1, 0, "north", topo.south.forced_intent(0, total))
             for c in range(self.center_c, self.ic1):
                 li = self.ic1 - c
                 fi = topo.south.forced_intent(li, total)
-                if fi is not None: yield (self.size - 1, c, -1, 0, "north", fi)
+                if fi is not None and (not rb_on or (rb_ic0 <= c <= rb_ic1)):
+                    yield (self.size - 1, c, -1, 0, "north", fi)
 
     # ── Validità corsia ───────────────────────────────────────────────
 
     def valid_lane_cell(self, r: int, c: int, dr: int, dc: int) -> bool:
-        if dc == 1:  return self.center_r <= r <= self.ir1
-        if dc == -1: return self.ir0 <= r < self.center_r
-        if dr == 1:  return self.ic0 <= c < self.center_c
-        if dr == -1: return self.center_c <= c <= self.ic1
+        if dc == 1:
+            ok = self.center_r <= r <= self.ir1
+            if self.roundabout: ok = ok and (self._rb_ir0 <= r <= self._rb_ir1)
+            return ok
+        if dc == -1:
+            ok = self.ir0 <= r < self.center_r
+            if self.roundabout: ok = ok and (self._rb_ir0 <= r <= self._rb_ir1)
+            return ok
+        if dr == 1:
+            ok = self.ic0 <= c < self.center_c
+            if self.roundabout: ok = ok and (self._rb_ic0 <= c <= self._rb_ic1)
+            return ok
+        if dr == -1:
+            ok = self.center_c <= c <= self.ic1
+            if self.roundabout: ok = ok and (self._rb_ic0 <= c <= self._rb_ic1)
+            return ok
         return False
+
+    # -- Roundabout ----------------------------------------------------
+
+    @staticmethod
+    def _fit_range(center: int, size: int, lo: int, hi: int) -> Tuple[int, int]:
+        """Restituisce [start,end] di lunghezza size dentro [lo,hi], centrato."""
+        if size <= 0:
+            return lo, lo
+        size = min(size, hi - lo + 1)
+        start = center - (size // 2)
+        end = start + size - 1
+        if start < lo:
+            end += (lo - start)
+            start = lo
+        if end > hi:
+            start -= (end - hi)
+            end = hi
+        if start < lo:
+            start = lo
+        if end > hi:
+            end = hi
+        return start, end
+
+    def _compute_roundabout_path(self, offset: int) -> List[Tuple[int, int]]:
+        """
+        Percorso ad anello (CCW) sul perimetro dell'incrocio con offset.
+        CCW per guida a destra: nord->ovest->sud->est->nord.
+        """
+        ir0 = self._rb_ir0 + offset; ir1 = self._rb_ir1 - offset
+        ic0 = self._rb_ic0 + offset; ic1 = self._rb_ic1 - offset
+        if ir0 > ir1 or ic0 > ic1:
+            return []
+
+        path: List[Tuple[int, int]] = []
+
+        # Top edge: right -> left
+        for c in range(ic1, ic0 - 1, -1):
+            path.append((ir0, c))
+        # Left edge: top -> bottom (skip corner)
+        for r in range(ir0 + 1, ir1 + 1):
+            path.append((r, ic0))
+        # Bottom edge: left -> right (skip corner)
+        for c in range(ic0 + 1, ic1 + 1):
+            path.append((ir1, c))
+        # Right edge: bottom -> top (skip corner)
+        for r in range(ir1 - 1, ir0, -1):
+            path.append((r, ic1))
+
+        return [cell for cell in path if self.in_bounds(cell[0], cell[1])]
+
+    def _compute_roundabout_paths(self) -> List[List[Tuple[int, int]]]:
+        """Genera i percorsi per tutte le corsie dell'anello."""
+        h = self._rb_ir1 - self._rb_ir0 + 1
+        w = self._rb_ic1 - self._rb_ic0 + 1
+        # Mantieni sempre libero il 3x3 centrale (quando possibile)
+        max_offset = min((h - 3) // 2, (w - 3) // 2)
+        if max_offset < 0:
+            max_offset = 0
+        lanes = max(1, min(self.roundabout_lanes, max_offset + 1))
+        paths: List[List[Tuple[int, int]]] = []
+        for k in range(lanes):
+            path = self._compute_roundabout_path(k)
+            if path:
+                paths.append(path)
+        return paths
+
+    def roundabout_path(
+        self,
+        entry_cell: Tuple[int, int],
+        exit_cell: Tuple[int, int],
+        ring_idx: int = 0,
+    ) -> tuple:
+        """Sottopercorso CCW dalla cella di ingresso a quella di uscita."""
+        if not self.roundabout or not self._roundabout_paths:
+            return ()
+        idx = max(0, min(ring_idx, len(self._roundabout_paths) - 1))
+        path = self._roundabout_paths[idx]
+        index_map = self._roundabout_index[idx]
+        i = index_map.get(entry_cell)
+        j = index_map.get(exit_cell)
+        if i is None or j is None:
+            return ()
+        if j >= i:
+            cells = path[i:j + 1]
+        else:
+            cells = path[i:] + path[:j + 1]
+        return tuple(cells)
 
     # ── Slip Lanes ────────────────────────────────────────────────────
 
@@ -249,6 +402,10 @@ class GridGeometry:
     @property
     def slip_entries(self) -> List[SlipEntry]:
         return self._slip_entries
+
+    @property
+    def roundabout_cells(self) -> Set[Tuple[int, int]]:
+        return self._roundabout_cells
 
     def is_slip_exclusive_lane(self, r, c, dr, dc) -> bool:
         if not self.topo.slip_exclusive:

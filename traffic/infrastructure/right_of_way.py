@@ -97,19 +97,21 @@ class RightOfWayChecker:
     def yield_block_cell(self, vehicle: "Vehicle") -> Set:
         """Prima cella di ingresso nell'incrocio (da bloccare mentre si cede)."""
         geo = self._geo
-        if vehicle.dc == 1:   return {(vehicle.r, geo.ic0)}
-        if vehicle.dc == -1:  return {(vehicle.r, geo.ic1)}
-        if vehicle.dr == 1:   return {(geo.ir0, vehicle.c)}
-        return {(geo.ir1, vehicle.c)}
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
+        if vehicle.dc == 1:   return {(vehicle.r, ic0)}
+        if vehicle.dc == -1:  return {(vehicle.r, ic1)}
+        if vehicle.dr == 1:   return {(ir0, vehicle.c)}
+        return {(ir1, vehicle.c)}
 
     def is_approaching(self, vehicle: "Vehicle") -> bool:
         """True se il veicolo è entro row_lookahead celle dall'incrocio."""
         geo = self._geo
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
         lk  = self._cfg.row_lookahead
-        if vehicle.dc == 1:   return geo.ic0 - lk <= vehicle.c < geo.ic0
-        if vehicle.dc == -1:  return geo.ic1 < vehicle.c <= geo.ic1 + lk
-        if vehicle.dr == 1:   return geo.ir0 - lk <= vehicle.r < geo.ir0
-        return geo.ir1 < vehicle.r <= geo.ir1 + lk
+        if vehicle.dc == 1:   return ic0 - lk <= vehicle.c < ic0
+        if vehicle.dc == -1:  return ic1 < vehicle.c <= ic1 + lk
+        if vehicle.dr == 1:   return ir0 - lk <= vehicle.r < ir0
+        return ir1 < vehicle.r <= ir1 + lk
 
     def oncoming_threat(self, vehicle: "Vehicle", occ: Dict) -> bool:
         """True se esiste un veicolo con precedenza nel percorso di conflitto."""
@@ -147,10 +149,11 @@ class RightOfWayChecker:
 
     def _ignore_prob(self, vehicle: "Vehicle", threat_gap: int) -> float:
         geo = self._geo
-        if vehicle.dc == 1:      dist = max(0, geo.ic0 - vehicle.c)
-        elif vehicle.dc == -1:   dist = max(0, vehicle.c - geo.ic1)
-        elif vehicle.dr == 1:    dist = max(0, geo.ir0 - vehicle.r)
-        else:                    dist = max(0, vehicle.r - geo.ir1)
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
+        if vehicle.dc == 1:      dist = max(0, ic0 - vehicle.c)
+        elif vehicle.dc == -1:   dist = max(0, vehicle.c - ic1)
+        elif vehicle.dr == 1:    dist = max(0, ir0 - vehicle.r)
+        else:                    dist = max(0, vehicle.r - ir1)
 
         max_dist = self._cfg.row_lookahead
         distance_bonus = 0.0
@@ -195,69 +198,73 @@ class RightOfWayChecker:
 
     def _oncoming_cells(self, vehicle: "Vehicle", look: int) -> List[Tuple]:
         geo = self._geo
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
         cells: List[Tuple] = []
         if vehicle.dc == 1:
-            for r in range(geo.ir0, geo.center_r):
-                for c in range(geo.ic0, geo.ic1+1): cells.append((r, c))
-                for c in range(geo.ic1+1, geo.ic1+1+look):
+            for r in range(ir0, geo.center_r):
+                for c in range(ic0, ic1+1): cells.append((r, c))
+                for c in range(ic1+1, ic1+1+look):
                     if geo.in_bounds(r, c): cells.append((r, c))
         elif vehicle.dc == -1:
-            for r in range(geo.center_r, geo.ir1+1):
-                for c in range(geo.ic0, geo.ic1+1): cells.append((r, c))
-                for c in range(max(0, geo.ic0-look), geo.ic0):
+            for r in range(geo.center_r, ir1+1):
+                for c in range(ic0, ic1+1): cells.append((r, c))
+                for c in range(max(0, ic0-look), ic0):
                     if geo.in_bounds(r, c): cells.append((r, c))
         elif vehicle.dr == 1:
-            for c in range(geo.center_c, geo.ic1+1):
-                for r in range(geo.ir0, geo.ir1+1): cells.append((r, c))
-                for r in range(geo.ir1+1, geo.ir1+1+look):
+            for c in range(geo.center_c, ic1+1):
+                for r in range(ir0, ir1+1): cells.append((r, c))
+                for r in range(ir1+1, ir1+1+look):
                     if geo.in_bounds(r, c): cells.append((r, c))
         else:
-            for c in range(geo.ic0, geo.center_c):
-                for r in range(geo.ir0, geo.ir1+1): cells.append((r, c))
-                for r in range(max(0, geo.ir0-look), geo.ir0):
+            for c in range(ic0, geo.center_c):
+                for r in range(ir0, ir1+1): cells.append((r, c))
+                for r in range(max(0, ir0-look), ir0):
                     if geo.in_bounds(r, c): cells.append((r, c))
         return cells
 
     def _inter_cells_for(self, pdr: int, pdc: int) -> List[Tuple]:
         geo = self._geo
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
         cells: List[Tuple] = []
         if pdc == 1:
-            for r in range(geo.center_r, geo.ir1+1):
-                for c in range(geo.ic0, geo.ic1+1): cells.append((r, c))
+            for r in range(geo.center_r, ir1+1):
+                for c in range(ic0, ic1+1): cells.append((r, c))
         elif pdc == -1:
-            for r in range(geo.ir0, geo.center_r):
-                for c in range(geo.ic0, geo.ic1+1): cells.append((r, c))
+            for r in range(ir0, geo.center_r):
+                for c in range(ic0, ic1+1): cells.append((r, c))
         elif pdr == 1:
-            for c in range(geo.ic0, geo.center_c):
-                for r in range(geo.ir0, geo.ir1+1): cells.append((r, c))
+            for c in range(ic0, geo.center_c):
+                for r in range(ir0, ir1+1): cells.append((r, c))
         else:
-            for c in range(geo.center_c, geo.ic1+1):
-                for r in range(geo.ir0, geo.ir1+1): cells.append((r, c))
+            for c in range(geo.center_c, ic1+1):
+                for r in range(ir0, ir1+1): cells.append((r, c))
         return cells
 
     def _approach_cells_for(self, pdr: int, pdc: int, chk: int) -> List[Tuple]:
         geo = self._geo
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
         cells: List[Tuple] = []
         if pdc == 1:
-            for r in range(geo.center_r, geo.ir1+1):
-                for c in range(max(0, geo.ic0-chk), geo.ic0): cells.append((r, c))
+            for r in range(geo.center_r, ir1+1):
+                for c in range(max(0, ic0-chk), ic0): cells.append((r, c))
         elif pdc == -1:
-            for r in range(geo.ir0, geo.center_r):
-                for c in range(geo.ic1+1, min(geo.size, geo.ic1+1+chk)): cells.append((r, c))
+            for r in range(ir0, geo.center_r):
+                for c in range(ic1+1, min(geo.size, ic1+1+chk)): cells.append((r, c))
         elif pdr == 1:
-            for c in range(geo.ic0, geo.center_c):
-                for r in range(max(0, geo.ir0-chk), geo.ir0): cells.append((r, c))
+            for c in range(ic0, geo.center_c):
+                for r in range(max(0, ir0-chk), ir0): cells.append((r, c))
         else:
-            for c in range(geo.center_c, geo.ic1+1):
-                for r in range(geo.ir1+1, min(geo.size, geo.ir1+1+chk)): cells.append((r, c))
+            for c in range(geo.center_c, ic1+1):
+                for r in range(ir1+1, min(geo.size, ir1+1+chk)): cells.append((r, c))
         return cells
 
     def _dist_to_inter(self, vehicle: "Vehicle") -> int:
         geo = self._geo
-        if vehicle.dc == 1:   return max(0, geo.ic0 - vehicle.c)
-        if vehicle.dc == -1:  return max(0, vehicle.c - geo.ic1)
-        if vehicle.dr == 1:   return max(0, geo.ir0 - vehicle.r)
-        return max(0, vehicle.r - geo.ir1)
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
+        if vehicle.dc == 1:   return max(0, ic0 - vehicle.c)
+        if vehicle.dc == -1:  return max(0, vehicle.c - ic1)
+        if vehicle.dr == 1:   return max(0, ir0 - vehicle.r)
+        return max(0, vehicle.r - ir1)
 
     def __repr__(self) -> str:
         return f"RightOfWayChecker(rule={self._rule()!r}, enabled={self._cfg.row_enabled})"

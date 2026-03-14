@@ -283,6 +283,23 @@ SCENARIOS["row_extreme"] = SimConfig(
 # SCENARI TOPOLOGIA
 # =====================================================================
 
+_RB_LANES = 3  # corsie anello (size = 2*N+3)
+SCENARIOS["roundabout"] = SimConfig(
+    output_file  = "out_roundabout.gif",
+    num_lanes    = _RB_LANES,      # corsie in entrata/uscita (6x6 con 3)
+    topology     = TopologyConfig(
+        name="roundabout_custom",
+        roundabout=True,
+        roundabout_lanes=_RB_LANES,
+        row_yield_to="left",
+    ),
+    light_policy = LightPolicy.NO_LIGHT,
+    row_enabled  = True,
+    row_lookahead = 10,
+    spawn_prob   = 0.35,
+    steps        = 600,
+)
+
 SCENARIOS["T_no_north"] = SimConfig(
     output_file   = "out_T_no_north.gif",
     topology      = TOPOLOGIES["T_no_north"],

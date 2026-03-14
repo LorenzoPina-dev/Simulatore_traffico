@@ -188,6 +188,14 @@ Ogni scenario e’ una `SimConfig` con:
 Per creare uno scenario rapido:
 - modifica il blocco `CUSTOM` in `main.py`
 
+Scenario rotatoria (NO_LIGHT):
+
+```bash
+python main.py roundabout
+```
+
+Per impostare N corsie nell'anello, modifica `roundabout_lanes` nello scenario rotatoria.
+
 ---
 
 ## 10. Limitazioni note
@@ -195,6 +203,7 @@ Per creare uno scenario rapido:
 - Svolte come traiettorie a L (non curve continue)
 - Nessun modello pedonale
 - Nessun coordinamento multi-incrocio
+- Rotatorie: supporto sui 4 bracci cardinali (N/E/S/O)
 
 ---
 

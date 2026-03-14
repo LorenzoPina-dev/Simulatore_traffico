@@ -202,6 +202,9 @@ class IntersectionPathReservation:
         ir0 = geo.ir0; ir1 = geo.ir1
         ic0 = geo.ic0; ic1 = geo.ic1
 
+        if getattr(geo.topo, "roundabout", False):
+            return self._compute_roundabout_path(vehicle)
+
         cells: List[Tuple[int,int]] = []
         ex_r = ex_c = ex_dr = ex_dc = 0
 
@@ -289,23 +292,133 @@ class IntersectionPathReservation:
         ex_r, ex_c = self._exit_cell_for_lane(vehicle, ex_dr, ex_dc)
         return tuple(cells), ex_r, ex_c, ex_dr, ex_dc
 
-    # ─────────────────────────────────────────────────────────────────
+
+
+    def _compute_roundabout_path(self, vehicle: "Vehicle") -> Tuple:
+        """Calcola il percorso lungo l'anello della rotatoria (CCW)."""
+        geo    = self._geo
+        dr, dc = vehicle.dr, vehicle.dc
+        intent = vehicle.intent
+
+        ring_count = getattr(geo, "roundabout_ring_count", 0)
+        if ring_count <= 0:
+            return (), 0, 0, 0, 0
+
+        # Mappa intent -> direzione uscita (come incrocio classico)
+        if dc == 1:
+            if intent == "straight": ex_dr, ex_dc = 0, 1
+            elif intent == "right":  ex_dr, ex_dc = 1, 0
+            else:                    ex_dr, ex_dc = -1, 0
+        elif dc == -1:
+            if intent == "straight": ex_dr, ex_dc = 0, -1
+            elif intent == "right":  ex_dr, ex_dc = -1, 0
+            else:                    ex_dr, ex_dc = 1, 0
+        elif dr == 1:
+            if intent == "straight": ex_dr, ex_dc = 1, 0
+            elif intent == "right":  ex_dr, ex_dc = 0, -1
+            else:                    ex_dr, ex_dc = 0, 1
+        else:  # dr == -1
+            if intent == "straight": ex_dr, ex_dc = -1, 0
+            elif intent == "right":  ex_dr, ex_dc = 0, 1
+            else:                    ex_dr, ex_dc = 0, -1
+
+        # Bounds anello base (outer)
+        rb_ir0 = geo._rb_ir0; rb_ir1 = geo._rb_ir1
+        rb_ic0 = geo._rb_ic0; rb_ic1 = geo._rb_ic1
+
+        # Seleziona corsia anello in base alla corsia di ingresso
+        desired_idx = max(0, min(vehicle.li, ring_count - 1))
+        entry_start = self._entry_cell(vehicle)
+        if dc != 0:
+            max_idx = min(entry_start[0] - rb_ir0, rb_ir1 - entry_start[0])
+        else:
+            max_idx = min(entry_start[1] - rb_ic0, rb_ic1 - entry_start[1])
+        ring_idx = max(0, min(desired_idx, max_idx, ring_count - 1))
+
+        # Bounds del ring selezionato
+        ir0 = rb_ir0 + ring_idx; ir1 = rb_ir1 - ring_idx
+        ic0 = rb_ic0 + ring_idx; ic1 = rb_ic1 - ring_idx
+
+        def _clamp(v, lo, hi):
+            return lo if v < lo else hi if v > hi else v
+
+        # Cella di ingresso sull'anello
+        if dc == 1:
+            entry_ring = (_clamp(entry_start[0], ir0, ir1), ic0)
+        elif dc == -1:
+            entry_ring = (_clamp(entry_start[0], ir0, ir1), ic1)
+        elif dr == 1:
+            entry_ring = (ir0, _clamp(entry_start[1], ic0, ic1))
+        else:
+            entry_ring = (ir1, _clamp(entry_start[1], ic0, ic1))
+
+        lanes_out = geo.lanes_for_direction(ex_dr, ex_dc)
+        if lanes_out <= 0:
+            return (), 0, 0, 0, 0
+        exit_li = max(0, min(vehicle.li, lanes_out - 1))
+
+        # Cella di uscita sull'anello
+        if ex_dc == 1:
+            row = _clamp(geo.ir1 - exit_li, ir0, ir1)
+            exit_ring = (row, ic1)
+            exit_target = (row, ic1)
+        elif ex_dc == -1:
+            row = _clamp(geo.ir0 + exit_li, ir0, ir1)
+            exit_ring = (row, ic0)
+            exit_target = (row, ic0)
+        elif ex_dr == 1:
+            col = _clamp(geo.ic0 + exit_li, ic0, ic1)
+            exit_ring = (ir1, col)
+            exit_target = (ir1, col)
+        else:
+            col = _clamp(geo.ic1 - exit_li, ic0, ic1)
+            exit_ring = (ir0, col)
+            exit_target = (ir0, col)
+
+        ring_path = geo.roundabout_path(entry_ring, exit_ring, ring_idx=ring_idx)
+        if not ring_path:
+            return (), 0, 0, 0, 0
+
+        # Connettore ingresso: entry_start -> entry_ring
+        cells = []
+        steps_in = abs(entry_ring[0] - entry_start[0]) + abs(entry_ring[1] - entry_start[1])
+        for k in range(0, steps_in + 1):
+            cells.append((entry_start[0] + dr * k, entry_start[1] + dc * k))
+
+        # Percorso sull'anello
+        if cells and ring_path[0] == cells[-1]:
+            cells.extend(ring_path[1:])
+        else:
+            cells.extend(ring_path)
+
+        # Connettore uscita: exit_ring -> exit_target
+        steps_out = abs(exit_target[0] - exit_ring[0]) + abs(exit_target[1] - exit_ring[1])
+        for k in range(1, steps_out + 1):
+            cells.append((exit_ring[0] + ex_dr * k, exit_ring[1] + ex_dc * k))
+
+        cells = [(r, c) for (r, c) in cells if geo.in_bounds(r, c)]
+        ex_r, ex_c = self._exit_cell_for_lane(vehicle, ex_dr, ex_dc)
+        return tuple(cells), ex_r, ex_c, ex_dr, ex_dc
+
+
     # Helper interni
     # ─────────────────────────────────────────────────────────────────
 
     def _dist_to_entry(self, vehicle: "Vehicle") -> int:
         geo = self._geo
-        if vehicle.dc == 1:   return geo.ic0 - vehicle.c
-        if vehicle.dc == -1:  return vehicle.c - geo.ic1
-        if vehicle.dr == 1:   return geo.ir0 - vehicle.r
-        return vehicle.r - geo.ir1
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
+        if vehicle.dc == 1:   return ic0 - vehicle.c
+        if vehicle.dc == -1:  return vehicle.c - ic1
+        if vehicle.dr == 1:   return ir0 - vehicle.r
+        return vehicle.r - ir1
 
     def _entry_cell(self, vehicle: "Vehicle") -> Tuple[int,int]:
         geo = self._geo
-        if vehicle.dc == 1:   return (vehicle.r, geo.ic0)
-        if vehicle.dc == -1:  return (vehicle.r, geo.ic1)
-        if vehicle.dr == 1:   return (geo.ir0, vehicle.c)
-        return (geo.ir1, vehicle.c)
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
+        if vehicle.dc == 1:   return (vehicle.r, ic0)
+        if vehicle.dc == -1:  return (vehicle.r, ic1)
+        if vehicle.dr == 1:   return (ir0, vehicle.c)
+        return (ir1, vehicle.c)
 
     def _exit_is_blocked(self, ex_r, ex_c, ex_dr, ex_dc, occ_snap, obs_set) -> bool:
         """
@@ -327,17 +440,18 @@ class IntersectionPathReservation:
 
     def _exit_cell_for_lane(self, vehicle: "Vehicle", ex_dr: int, ex_dc: int) -> Tuple[int, int]:
         geo = self._geo
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
         lanes = geo.lanes_for_direction(ex_dr, ex_dc)
         if lanes <= 0:
             return (vehicle.r, vehicle.c)
         li = max(0, min(vehicle.li, lanes - 1))
         if ex_dc == 1:
-            return (geo.ir1 - li, geo.ic1 + 1)
+            return (geo.ir1 - li, ic1 + 1)
         if ex_dc == -1:
-            return (geo.ir0 + li, geo.ic0 - 1)
+            return (geo.ir0 + li, ic0 - 1)
         if ex_dr == 1:
-            return (geo.ir1 + 1, geo.ic0 + li)
-        return (geo.ir0 - 1, geo.ic1 - li)
+            return (ir1 + 1, geo.ic0 + li)
+        return (ir0 - 1, geo.ic1 - li)
 
     def _reserve(self, vehicle: "Vehicle", path: tuple) -> bool:
         obs_s = set()   # ostacoli già verificati in try_enter

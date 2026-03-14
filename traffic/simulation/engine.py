@@ -377,10 +377,11 @@ class SimEngine:
     ) -> Tuple:
         """Blocca il veicolo prima della box se non ha prenotazione IPR."""
         geo = ctx.geo
-        if car.dc == 1:    sr, sc = nr, geo.ic0 - 1
-        elif car.dc == -1: sr, sc = nr, geo.ic1 + 1
-        elif car.dr == 1:  sr, sc = geo.ir0 - 1, nc
-        else:              sr, sc = geo.ir1 + 1, nc
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
+        if car.dc == 1:    sr, sc = nr, ic0 - 1
+        elif car.dc == -1: sr, sc = nr, ic1 + 1
+        elif car.dr == 1:  sr, sc = ir0 - 1, nc
+        else:              sr, sc = ir1 + 1, nc
 
         if geo.in_bounds(sr, sc) and (sr, sc) not in ctx.occ:
             return sr, sc, 1, 1.0
@@ -458,19 +459,25 @@ class SimEngine:
         topo = self.cfg.topology
         g    = np.zeros((geo.size, geo.size), dtype=float)
         cr   = geo.center_r; cc = geo.center_c
+        ib_ir0, ib_ir1, ib_ic0, ib_ic1 = geo.intersection_bounds()
 
         # Strade
-        if topo.west.enabled:  g[cr : geo.ir1+1, 0 : geo.ic0] = 1
-        if topo.east.enabled:  g[geo.ir0 : cr,   0 : geo.ic0] = 1
-        if topo.west.enabled:  g[cr : geo.ir1+1, geo.ic1+1 : geo.size] = 1
-        if topo.east.enabled:  g[geo.ir0 : cr,   geo.ic1+1 : geo.size] = 1
-        if topo.north.enabled: g[0 : geo.ir0,    geo.ic0 : cc] = 1
-        if topo.south.enabled: g[0 : geo.ir0,    cc : geo.ic1+1] = 1
-        if topo.north.enabled: g[geo.ir1+1 : geo.size, geo.ic0 : cc] = 1
-        if topo.south.enabled: g[geo.ir1+1 : geo.size, cc : geo.ic1+1] = 1
+        if topo.west.enabled:  g[cr : geo.ir1+1, 0 : ib_ic0] = 1
+        if topo.east.enabled:  g[geo.ir0 : cr,   0 : ib_ic0] = 1
+        if topo.west.enabled:  g[cr : geo.ir1+1, ib_ic1+1 : geo.size] = 1
+        if topo.east.enabled:  g[geo.ir0 : cr,   ib_ic1+1 : geo.size] = 1
+        if topo.north.enabled: g[0 : ib_ir0,    geo.ic0 : cc] = 1
+        if topo.south.enabled: g[0 : ib_ir0,    cc : geo.ic1+1] = 1
+        if topo.north.enabled: g[ib_ir1+1 : geo.size, geo.ic0 : cc] = 1
+        if topo.south.enabled: g[ib_ir1+1 : geo.size, cc : geo.ic1+1] = 1
 
-        # Incrocio
-        g[geo.ir0 : geo.ir1+1, geo.ic0 : geo.ic1+1] = 2
+        # Incrocio / Rotatoria
+        if getattr(geo, "roundabout", False) and getattr(geo, "roundabout_cells", None):
+            for (r, c) in geo.roundabout_cells:
+                if geo.in_bounds(r, c):
+                    g[r, c] = 2
+        else:
+            g[geo.ir0 : geo.ir1+1, geo.ic0 : geo.ic1+1] = 2
 
         # Corsie dedicate
         for (r, c), intent_type in geo.dedicated_road_cells().items():
@@ -484,8 +491,8 @@ class SimEngine:
 
         # Stop lines
         col_h, col_v = self.light.stop_line_colors()
-        sl_w = geo.ic0 - 1; sl_e = geo.ic1 + 1
-        sl_n = geo.ir0 - 1; sl_s = geo.ir1 + 1
+        sl_w = ib_ic0 - 1; sl_e = ib_ic1 + 1
+        sl_n = ib_ir0 - 1; sl_s = ib_ir1 + 1
         if topo.west.enabled  and 0 <= sl_w < geo.size: g[cr : geo.ir1+1, sl_w] = col_h
         if topo.east.enabled  and 0 <= sl_e < geo.size: g[geo.ir0 : cr,   sl_e] = col_h
         if topo.north.enabled and 0 <= sl_n < geo.size: g[sl_n, geo.ic0 : cc]   = col_v

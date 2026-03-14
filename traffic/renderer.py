@@ -270,6 +270,36 @@ class Renderer:
         kw_c = dict(color="#ffffffcc", linewidth=1.5)
         kw_d = dict(color="white", linewidth=0.5, linestyle="--", alpha=0.35)
 
+        if getattr(geo, "roundabout", False):
+            # Disegna linee corsie solo fuori dall'anello
+            ib_ir0, ib_ir1, ib_ic0, ib_ic1 = geo.intersection_bounds()
+            def hseg(y, x0, x1, **kw):
+                self.ax.plot([x0, x1], [y, y], **kw)
+
+            def vseg(x, y0, y1, **kw):
+                self.ax.plot([x, x], [y0, y1], **kw)
+
+            x_min = -0.5; x_max = geo.size - 0.5
+            y_min = -0.5; y_max = geo.size - 0.5
+
+            if topo.west.enabled:
+                hseg(cr - 0.5, x_min, ib_ic0 - 0.5, **kw_c)
+                for i in range(1, geo.lanes_east):
+                    hseg(cr + i - 0.5, x_min, ib_ic0 - 0.5, **kw_d)
+            if topo.east.enabled:
+                hseg(cr - 0.5, ib_ic1 + 0.5, x_max, **kw_c)
+                for i in range(1, geo.lanes_west):
+                    hseg(geo.ir0 + i - 0.5, ib_ic1 + 0.5, x_max, **kw_d)
+            if topo.north.enabled:
+                vseg(cc - 0.5, y_min, ib_ir0 - 0.5, **kw_c)
+                for i in range(1, geo.lanes_south):
+                    vseg(geo.ic0 + i - 0.5, y_min, ib_ir0 - 0.5, **kw_d)
+            if topo.south.enabled:
+                vseg(cc - 0.5, ib_ir1 + 0.5, y_max, **kw_c)
+                for i in range(1, geo.lanes_north):
+                    vseg(cc + i - 0.5, ib_ir1 + 0.5, y_max, **kw_d)
+            return
+
         if topo.west.enabled or topo.east.enabled:
             self.ax.axhline(y=cr - 0.5, **kw_c)
         if topo.north.enabled or topo.south.enabled:
@@ -289,11 +319,12 @@ class Renderer:
 
     def _draw_intersection_border(self):
         geo = self.geo
+        ir0, ir1, ic0, ic1 = geo.intersection_bounds()
         kw  = dict(color="#ffffff50", linewidth=0.8)
-        self.ax.axvline(x=geo.ic0 - 0.5, **kw)
-        self.ax.axvline(x=geo.ic1 + 0.5, **kw)
-        self.ax.axhline(y=geo.ir0 - 0.5, **kw)
-        self.ax.axhline(y=geo.ir1 + 0.5, **kw)
+        self.ax.axvline(x=ic0 - 0.5, **kw)
+        self.ax.axvline(x=ic1 + 0.5, **kw)
+        self.ax.axhline(y=ir0 - 0.5, **kw)
+        self.ax.axhline(y=ir1 + 0.5, **kw)
 
     def _draw_slip_lanes(self):
         if not self.cfg.topology.slip_lanes_enabled:
